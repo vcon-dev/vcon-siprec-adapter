@@ -1,0 +1,45 @@
+server:
+  listen_address: "0.0.0.0"
+  sip_port_udp: 5060
+  sip_port_tcp: 5060
+  sip_port_tls: 5061
+  tls_cert: "/etc/ssl/certs/siprec-srs.pem"
+  tls_key: "/etc/ssl/private/siprec-srs.key"
+  user_agent: "SIPREC-SRS/1.0"
+  max_sessions: 100
+  session_timeout: 3600  # 1 hour
+
+storage:
+  local_path: "./vcons"
+  filename_pattern: "{timestamp}_{call_id}.vcon.json"
+  create_directories: true
+  cleanup_temp_files: true
+
+webhooks:
+  enabled: true
+  endpoints:
+    - url: "https://api.example.com/vcons"
+      headers:
+        Authorization: "Bearer your-token-here"
+        Content-Type: "application/json"
+      retry_attempts: 3
+      timeout: 30
+      backoff_factor: 2.0
+
+rtp:
+  buffer_size: 65536
+  supported_codecs:
+    - "PCMU/8000"  # G.711 μ-law
+    - "PCMA/8000"  # G.711 A-law
+    - "G722/8000"  # G.722
+    - "opus/48000" # Opus
+  audio_format: "wav"
+  sample_rate: 8000
+  channels: 1
+
+logging:
+  level: "INFO"
+  file: "./logs/siprec-srs.log"
+  max_size: "10MB"
+  backup_count: 5
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
