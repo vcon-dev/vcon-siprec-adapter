@@ -1,0 +1,355 @@
+{
+  "schema_version": "1.0.0",
+  "repo": "vcon-siprec-adapter",
+  "repo_version": null,
+  "archetype": "python-library",
+  "generated_at": "2026-04-16T15:15:46.648940+00:00",
+  "stats": {
+    "node_count": 53,
+    "edge_count": 0
+  },
+  "nodes": [
+    {
+      "id": "dependency:pjsua2",
+      "type": "dependency",
+      "name": "pjsua2",
+      "file": "requirements.txt"
+    },
+    {
+      "id": "dependency:vcon",
+      "type": "dependency",
+      "name": "vcon",
+      "file": "requirements.txt"
+    },
+    {
+      "id": "dependency:pyyaml",
+      "type": "dependency",
+      "name": "pyyaml",
+      "file": "requirements.txt"
+    },
+    {
+      "id": "dependency:python-dotenv",
+      "type": "dependency",
+      "name": "python-dotenv",
+      "file": "requirements.txt"
+    },
+    {
+      "id": "dependency:aiohttp",
+      "type": "dependency",
+      "name": "aiohttp",
+      "file": "requirements.txt"
+    },
+    {
+      "id": "dependency:aiofiles",
+      "type": "dependency",
+      "name": "aiofiles",
+      "file": "requirements.txt"
+    },
+    {
+      "id": "dependency:pydub",
+      "type": "dependency",
+      "name": "pydub",
+      "file": "requirements.txt"
+    },
+    {
+      "id": "dependency:structlog",
+      "type": "dependency",
+      "name": "structlog",
+      "file": "requirements.txt"
+    },
+    {
+      "id": "dependency:pytest",
+      "type": "dependency",
+      "name": "pytest",
+      "file": "requirements.txt"
+    },
+    {
+      "id": "dependency:pytest-asyncio",
+      "type": "dependency",
+      "name": "pytest-asyncio",
+      "file": "requirements.txt"
+    },
+    {
+      "id": "dependency:pytest-mock",
+      "type": "dependency",
+      "name": "pytest-mock",
+      "file": "requirements.txt"
+    },
+    {
+      "id": "dependency:black",
+      "type": "dependency",
+      "name": "black",
+      "file": "requirements.txt"
+    },
+    {
+      "id": "dependency:flake8",
+      "type": "dependency",
+      "name": "flake8",
+      "file": "requirements.txt"
+    },
+    {
+      "id": "dependency:mypy",
+      "type": "dependency",
+      "name": "mypy",
+      "file": "requirements.txt"
+    },
+    {
+      "id": "class:ServerConfig",
+      "type": "class",
+      "name": "ServerConfig",
+      "file": "siprec_srs/config.py",
+      "line": 16
+    },
+    {
+      "id": "class:StorageConfig",
+      "type": "class",
+      "name": "StorageConfig",
+      "file": "siprec_srs/config.py",
+      "line": 30
+    },
+    {
+      "id": "class:WebhookEndpoint",
+      "type": "class",
+      "name": "WebhookEndpoint",
+      "file": "siprec_srs/config.py",
+      "line": 39
+    },
+    {
+      "id": "class:WebhookConfig",
+      "type": "class",
+      "name": "WebhookConfig",
+      "file": "siprec_srs/config.py",
+      "line": 49
+    },
+    {
+      "id": "class:RTPConfig",
+      "type": "class",
+      "name": "RTPConfig",
+      "file": "siprec_srs/config.py",
+      "line": 56
+    },
+    {
+      "id": "class:LoggingConfig",
+      "type": "class",
+      "name": "LoggingConfig",
+      "file": "siprec_srs/config.py",
+      "line": 68
+    },
+    {
+      "id": "class:Config",
+      "type": "class",
+      "name": "Config",
+      "file": "siprec_srs/config.py",
+      "line": 78
+    },
+    {
+      "id": "class:ConfigManager",
+      "type": "class",
+      "name": "ConfigManager",
+      "file": "siprec_srs/config.py",
+      "line": 87
+    },
+    {
+      "id": "class:RTPPacket",
+      "type": "class",
+      "name": "RTPPacket",
+      "file": "siprec_srs/rtp_handler.py",
+      "line": 22
+    },
+    {
+      "id": "class:AudioStream",
+      "type": "class",
+      "name": "AudioStream",
+      "file": "siprec_srs/rtp_handler.py",
+      "line": 54
+    },
+    {
+      "id": "class:RTPHandler",
+      "type": "class",
+      "name": "RTPHandler",
+      "file": "siprec_srs/rtp_handler.py",
+      "line": 280
+    },
+    {
+      "id": "class:SIPRECSession",
+      "type": "class",
+      "name": "SIPRECSession",
+      "file": "siprec_srs/sip_server.py",
+      "line": 19
+    },
+    {
+      "id": "class:SIPRECServer",
+      "type": "class",
+      "name": "SIPRECServer",
+      "file": "siprec_srs/sip_server.py",
+      "line": 46
+    },
+    {
+      "id": "class:SIPRECCall",
+      "type": "class",
+      "name": "SIPRECCall",
+      "file": "siprec_srs/sip_server.py",
+      "line": 161
+    },
+    {
+      "id": "class:SIPRECAccount",
+      "type": "class",
+      "name": "SIPRECAccount",
+      "file": "siprec_srs/sip_server.py",
+      "line": 287
+    },
+    {
+      "id": "class:SIPRECParser",
+      "type": "class",
+      "name": "SIPRECParser",
+      "file": "siprec_srs/siprec_parser.py",
+      "line": 14
+    },
+    {
+      "id": "class:StorageHandler",
+      "type": "class",
+      "name": "StorageHandler",
+      "file": "siprec_srs/storage_handler.py",
+      "line": 18
+    },
+    {
+      "id": "class:VConConverter",
+      "type": "class",
+      "name": "VConConverter",
+      "file": "siprec_srs/vcon_converter.py",
+      "line": 21
+    },
+    {
+      "id": "class:WebhookDelivery",
+      "type": "class",
+      "name": "WebhookDelivery",
+      "file": "siprec_srs/webhook_delivery.py",
+      "line": 17
+    },
+    {
+      "id": "class:TestConfigManager",
+      "type": "class",
+      "name": "TestConfigManager",
+      "file": "tests/test_config.py",
+      "line": 12
+    },
+    {
+      "id": "class:TestIntegration",
+      "type": "class",
+      "name": "TestIntegration",
+      "file": "tests/test_integration.py",
+      "line": 14
+    },
+    {
+      "id": "class:TestVConConverter",
+      "type": "class",
+      "name": "TestVConConverter",
+      "file": "tests/test_vcon_converter.py",
+      "line": 13
+    },
+    {
+      "id": "config:SIPREC_FILENAME_PATTERN",
+      "type": "config",
+      "name": "SIPREC_FILENAME_PATTERN",
+      "file": "siprec_srs/config.py"
+    },
+    {
+      "id": "config:SIPREC_LISTEN_ADDRESS",
+      "type": "config",
+      "name": "SIPREC_LISTEN_ADDRESS",
+      "file": "siprec_srs/config.py"
+    },
+    {
+      "id": "config:SIPREC_LOG_FILE",
+      "type": "config",
+      "name": "SIPREC_LOG_FILE",
+      "file": "siprec_srs/config.py"
+    },
+    {
+      "id": "config:SIPREC_LOG_LEVEL",
+      "type": "config",
+      "name": "SIPREC_LOG_LEVEL",
+      "file": "siprec_srs/config.py"
+    },
+    {
+      "id": "config:SIPREC_STORAGE_PATH",
+      "type": "config",
+      "name": "SIPREC_STORAGE_PATH",
+      "file": "siprec_srs/config.py"
+    },
+    {
+      "id": "config:SIPREC_TCP_PORT",
+      "type": "config",
+      "name": "SIPREC_TCP_PORT",
+      "file": "siprec_srs/config.py"
+    },
+    {
+      "id": "config:SIPREC_TLS_CERT",
+      "type": "config",
+      "name": "SIPREC_TLS_CERT",
+      "file": "siprec_srs/config.py"
+    },
+    {
+      "id": "config:SIPREC_TLS_KEY",
+      "type": "config",
+      "name": "SIPREC_TLS_KEY",
+      "file": "siprec_srs/config.py"
+    },
+    {
+      "id": "config:SIPREC_TLS_PORT",
+      "type": "config",
+      "name": "SIPREC_TLS_PORT",
+      "file": "siprec_srs/config.py"
+    },
+    {
+      "id": "config:SIPREC_UDP_PORT",
+      "type": "config",
+      "name": "SIPREC_UDP_PORT",
+      "file": "siprec_srs/config.py"
+    },
+    {
+      "id": "config:SIPREC_WEBHOOK_ENABLED",
+      "type": "config",
+      "name": "SIPREC_WEBHOOK_ENABLED",
+      "file": "siprec_srs/config.py"
+    },
+    {
+      "id": "config:SIPREC_WEBHOOK_RETRY_ATTEMPTS",
+      "type": "config",
+      "name": "SIPREC_WEBHOOK_RETRY_ATTEMPTS",
+      "file": "siprec_srs/config.py"
+    },
+    {
+      "id": "config:SIPREC_WEBHOOK_TIMEOUT",
+      "type": "config",
+      "name": "SIPREC_WEBHOOK_TIMEOUT",
+      "file": "siprec_srs/config.py"
+    },
+    {
+      "id": "config:SIPREC_WEBHOOK_TOKEN",
+      "type": "config",
+      "name": "SIPREC_WEBHOOK_TOKEN",
+      "file": "siprec_srs/config.py"
+    },
+    {
+      "id": "config:SIPREC_WEBHOOK_URL",
+      "type": "config",
+      "name": "SIPREC_WEBHOOK_URL",
+      "file": "siprec_srs/config.py"
+    },
+    {
+      "id": "artifact:docker-image",
+      "type": "artifact",
+      "name": "Docker image",
+      "file": "Dockerfile"
+    },
+    {
+      "id": "document:readme-md",
+      "type": "document",
+      "name": "README.md",
+      "file": "README.md"
+    }
+  ],
+  "edges": [],
+  "subsystems": []
+}
