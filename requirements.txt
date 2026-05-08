@@ -1,8 +1,8 @@
 # SIP/RTP Stack
 pjsua2==2.13.1
 
-# vCon library
-vcon>=0.0.1
+# vCon library (>=0.9.1 for spec-correct names: amended, critical)
+vcon>=0.9.1
 
 # Configuration and utilities
 pyyaml>=6.0

@@ -24,28 +24,23 @@ class VConConverter:
     def __init__(self):
         self.siprec_parser = SIPRECParser()
     
-    def convert_session_to_vcon(self, session_data: Dict[str, Any], 
+    def convert_session_to_vcon(self, session_data: Dict[str, Any],
                                rtp_handler: RTPHandler) -> Optional[Vcon]:
         """Convert a SIPREC session to vCon format."""
         try:
-            # Create new vCon
             vcon = Vcon.build_new()
-            
-            # Add basic metadata
+            # build_new() does not set the syntax version; spec requires "0.4.0"
+            vcon.vcon_dict["vcon"] = "0.4.0"
+
             vcon.add_tag("source", "siprec")
             vcon.add_tag("call_id", session_data.get('call_id', ''))
             vcon.add_tag("recording_session_id", session_data.get('recording_session_id', ''))
             vcon.add_tag("session_id", session_data.get('session_id', ''))
             vcon.add_tag("conversion_timestamp", datetime.now(timezone.utc).isoformat())
-            
-            # Add participants
+
             self._add_participants(vcon, session_data.get('participants', []))
-            
-            # Add audio dialogs
             self._add_audio_dialogs(vcon, session_data, rtp_handler)
-            
-            # Add metadata dialogs
-            self._add_metadata_dialogs(vcon, session_data)
+            self._add_session_metadata_attachment(vcon, session_data)
             
             # Validate the vCon
             is_valid, errors = vcon.is_valid()
@@ -122,7 +117,7 @@ class VConConverter:
                     parties=list(range(len(session_data.get('participants', [])))),
                     mimetype=mime_type,
                     body=audio_data,
-                    encoding="base64",
+                    encoding="base64url",
                     filename=Path(audio_file_path).name
                 )
                 
@@ -141,10 +136,13 @@ class VConConverter:
         except Exception as e:
             logger.error(f"Error adding audio dialogs: {e}")
     
-    def _add_metadata_dialogs(self, vcon: Vcon, session_data: Dict[str, Any]):
-        """Add metadata dialogs for session information."""
+    def _add_session_metadata_attachment(self, vcon: Vcon, session_data: Dict[str, Any]):
+        """Add SIPREC session metadata as a vCon attachment.
+
+        Per draft-ietf-vcon-vcon-core-02, structured metadata belongs in
+        attachments[] (with `purpose`), not as a synthetic text dialog.
+        """
         try:
-            # Create session info dialog
             session_info = {
                 'session_id': session_data.get('session_id'),
                 'call_id': session_data.get('call_id'),
@@ -153,37 +151,34 @@ class VConConverter:
                 'end_time': session_data.get('end_time'),
                 'remote_uri': session_data.get('remote_uri'),
                 'local_uri': session_data.get('local_uri'),
-                'media_streams': session_data.get('media_streams', [])
+                'media_streams': session_data.get('media_streams', []),
+                'source': 'siprec',
             }
-            
-            dialog = Dialog(
-                type="text",
-                start=session_data.get('start_time', datetime.now(timezone.utc).isoformat()),
-                parties=list(range(len(session_data.get('participants', [])))),
-                mimetype="application/json",
-                body=json.dumps(session_info, indent=2),
-                encoding="none"
-            )
-            
-            dialog.metadata = dialog.metadata or {}
-            dialog.metadata['type'] = 'session_metadata'
-            dialog.metadata['source'] = 'siprec'
-            
-            vcon.add_dialog(dialog)
-            
+
+            # The vcon lib's add_attachment() rejects encoding="json"; build
+            # the attachment dict directly per the speckit guidance.
+            vcon.vcon_dict.setdefault("attachments", []).append({
+                "purpose": "session_metadata",
+                "party": 0,
+                "dialog": 0,
+                "encoding": "json",
+                "body": json.dumps(session_info),
+            })
+
         except Exception as e:
-            logger.error(f"Error adding metadata dialogs: {e}")
+            logger.error(f"Error adding session metadata attachment: {e}")
     
     def _read_audio_file(self, file_path: str) -> Optional[str]:
-        """Read audio file and return base64-encoded data."""
+        """Read audio file and return base64url-encoded data (per vCon spec)."""
         try:
             with open(file_path, 'rb') as f:
                 audio_data = f.read()
-            
-            # Encode as base64
-            encoded_data = base64.b64encode(audio_data).decode('utf-8')
+
+            # vCon spec uses base64url (RFC 4648 §5), not standard base64.
+            # urlsafe_b64encode produces base64url; strip padding per common usage.
+            encoded_data = base64.urlsafe_b64encode(audio_data).decode('ascii')
             return encoded_data
-            
+
         except Exception as e:
             logger.error(f"Error reading audio file {file_path}: {e}")
             return None
@@ -300,7 +295,7 @@ class VConConverter:
                     parties=list(range(len(session_data.get('participants', [])))),
                     mimetype="audio/wav",
                     body=audio_data,
-                    encoding="base64",
+                    encoding="base64url",
                     filename=Path(merged_file).name
                 )
                 

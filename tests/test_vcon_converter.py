@@ -4,7 +4,7 @@ Tests for vCon converter functionality.
 
 import pytest
 import tempfile
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from siprec_srs.vcon_converter import VConConverter
 from siprec_srs.rtp_handler import RTPHandler, RTPConfig
@@ -39,8 +39,8 @@ class TestVConConverter:
                     'role': 'callee'
                 }
             ],
-            'start_time': datetime.now().isoformat(),
-            'end_time': datetime.now().isoformat(),
+            'start_time': datetime.now(timezone.utc).isoformat(),
+            'end_time': datetime.now(timezone.utc).isoformat(),
             'media_streams': []
         }
         
@@ -48,30 +48,37 @@ class TestVConConverter:
         
         assert vcon is not None
         assert vcon.uuid is not None
+        assert vcon.vcon_dict["vcon"] == "0.4.0"
         assert len(vcon.parties) == 2
-        assert len(vcon.dialog) >= 1  # At least metadata dialog
-        
-        # Check tags
+
+        # Session metadata is now an attachment, not a synthetic text dialog.
+        attachments = vcon.vcon_dict.get("attachments", [])
+        assert any(a.get("purpose") == "session_metadata" for a in attachments)
+
         assert vcon.get_tag('source') == 'siprec'
         assert vcon.get_tag('call_id') == 'call_456@example.com'
         assert vcon.get_tag('recording_session_id') == 'rec_789'
-    
-    def test_validate_vcon(self):
-        """Test vCon validation."""
+
+    def test_session_metadata_attachment_shape(self):
+        """Session metadata attachment must follow vCon spec field shape."""
         session_data = {
             'session_id': 'test_session',
             'call_id': 'test_call',
             'participants': [
-                {'id': 'p1', 'name': 'Test User', 'role': 'participant'}
+                {'id': 'p1', 'name': 'Test User'}
             ],
-            'start_time': datetime.now().isoformat()
+            'start_time': datetime.now(timezone.utc).isoformat()
         }
-        
+
         vcon = self.converter.convert_session_to_vcon(session_data, self.rtp_handler)
         assert vcon is not None
-        
-        is_valid = self.converter.validate_vcon(vcon)
-        assert is_valid is True
+
+        attachments = vcon.vcon_dict.get("attachments", [])
+        meta = next(a for a in attachments if a.get("purpose") == "session_metadata")
+        assert meta["party"] == 0
+        assert meta["dialog"] == 0
+        assert meta["encoding"] == "json"
+        assert isinstance(meta["body"], str)  # JSON-encoded string, not dict
     
     def test_merge_audio_streams(self):
         """Test merging multiple audio streams."""

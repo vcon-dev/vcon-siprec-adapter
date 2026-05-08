@@ -5,7 +5,7 @@ SIPREC metadata parser for extracting information from SIP headers and SDP.
 import re
 import logging
 from typing import Dict, Any, Optional, List
-from datetime import datetime
+from datetime import datetime, timezone
 import pjsua2 as pj
 
 logger = logging.getLogger(__name__)
@@ -46,7 +46,7 @@ class SIPRECParser:
                 'recording_session_id': '',
                 'participants': [],
                 'media_streams': [],
-                'timestamp': datetime.now().isoformat(),
+                'timestamp': datetime.now(timezone.utc).isoformat(),
                 'remote_uri': call_info.remoteUri,
                 'local_uri': call_info.localUri
             }
@@ -292,7 +292,7 @@ class SIPRECParser:
             return {
                 'session_id': call_info.callId,
                 'call_id': call_info.callId,
-                'timestamp': datetime.now().isoformat(),
+                'timestamp': datetime.now(timezone.utc).isoformat(),
                 'reason': 'call_ended'
             }
         except Exception as e:
