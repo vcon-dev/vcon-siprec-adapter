@@ -19,6 +19,7 @@ from siprec_srs.sip_server import SIPRECServer
 from siprec_srs.vcon_converter import VConConverter
 from siprec_srs.storage_handler import StorageHandler
 from siprec_srs.webhook_delivery import WebhookDelivery
+from siprec_srs.health_server import HealthServer
 
 
 class SIPRECSRSApp:
@@ -27,9 +28,21 @@ class SIPRECSRSApp:
     def __init__(self, config: Config):
         self.config = config
         self.sip_server: Optional[SIPRECServer] = None
-        self.vcon_converter = VConConverter(lawful_basis_config=config.lawful_basis)
+        self.vcon_converter = VConConverter(
+            lawful_basis_config=config.lawful_basis,
+            media_config=config.media,
+        )
         self.storage_handler = StorageHandler(config.storage)
         self.webhook_delivery = WebhookDelivery(config.webhooks)
+        self.health_server: Optional[HealthServer] = (
+            HealthServer(
+                host=config.health.host,
+                port=config.health.port,
+                webhook_stats_provider=self.webhook_delivery.get_stats,
+            )
+            if config.health.enabled
+            else None
+        )
         self.running = False
         
         # Set up logging
@@ -88,6 +101,10 @@ class SIPRECSRSApp:
             
             # Start webhook delivery
             await self.webhook_delivery.start()
+
+            # Start health/metrics server
+            if self.health_server is not None:
+                await self.health_server.start()
             
             # Start SIP server
             self.sip_server = SIPRECServer(self.config)
@@ -116,6 +133,10 @@ class SIPRECSRSApp:
             if self.sip_server:
                 await self.sip_server.stop()
             
+            # Stop health server
+            if self.health_server is not None:
+                await self.health_server.stop()
+
             # Stop webhook delivery
             await self.webhook_delivery.stop()
             

@@ -43,6 +43,9 @@ class WebhookEndpoint:
     retry_attempts: int = 3
     timeout: int = 30
     backoff_factor: float = 2.0
+    # HMAC signing: when set, the request body is HMAC-SHA256-signed and
+    # the digest is sent as `X-Hub-Signature-256: sha256=<hex>`.
+    hmac_secret: Optional[str] = None
 
 
 @dataclass
@@ -50,6 +53,9 @@ class WebhookConfig:
     """Webhook configuration settings."""
     enabled: bool = True
     endpoints: List[WebhookEndpoint] = field(default_factory=list)
+    # Directory where vCons that exhaust all retries are written for
+    # later replay. When None, failed deliveries are dropped (after logs).
+    dlq_path: Optional[str] = None
 
 
 @dataclass
@@ -62,6 +68,22 @@ class RTPConfig:
     audio_format: str = "wav"
     sample_rate: int = 8000
     channels: int = 1
+
+
+@dataclass
+class MediaConfig:
+    """How to embed audio in emitted vCons.
+
+    `mode: "inline"` (default): audio bytes are base64url-encoded into the
+    Dialog `body`. Vcons are self-contained but large.
+
+    `mode: "external"`: audio is published to `base_url + filename` and the
+    Dialog carries `url` + `content_hash` (sha512-base64url) per spec. The
+    publishing step itself is the operator's responsibility — this mode
+    just ensures the emitted vCon points at the right URL with a real hash.
+    """
+    mode: str = "inline"  # "inline" | "external"
+    base_url: Optional[str] = None  # required when mode == "external"
 
 
 @dataclass
@@ -81,6 +103,14 @@ class LawfulBasisConfig:
 
 
 @dataclass
+class HealthConfig:
+    """Configuration for the /healthz + /metrics HTTP endpoint."""
+    enabled: bool = True
+    host: str = "0.0.0.0"
+    port: int = 8080
+
+
+@dataclass
 class LoggingConfig:
     """Logging configuration settings."""
     level: str = "INFO"
@@ -97,7 +127,9 @@ class Config:
     storage: StorageConfig = field(default_factory=StorageConfig)
     webhooks: WebhookConfig = field(default_factory=WebhookConfig)
     rtp: RTPConfig = field(default_factory=RTPConfig)
+    media: MediaConfig = field(default_factory=MediaConfig)
     lawful_basis: LawfulBasisConfig = field(default_factory=LawfulBasisConfig)
+    health: HealthConfig = field(default_factory=HealthConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
 
 
@@ -230,13 +262,15 @@ class ConfigManager:
                     headers=endpoint_data.get('headers', {}),
                     retry_attempts=endpoint_data.get('retry_attempts', 3),
                     timeout=endpoint_data.get('timeout', 30),
-                    backoff_factor=endpoint_data.get('backoff_factor', 2.0)
+                    backoff_factor=endpoint_data.get('backoff_factor', 2.0),
+                    hmac_secret=endpoint_data.get('hmac_secret'),
                 )
                 endpoints.append(endpoint)
-            
+
             config.webhooks = WebhookConfig(
                 enabled=webhook_data.get('enabled', True),
-                endpoints=endpoints
+                endpoints=endpoints,
+                dlq_path=webhook_data.get('dlq_path'),
             )
         
         # Parse RTP configuration
@@ -250,6 +284,14 @@ class ConfigManager:
                 channels=rtp_data.get('channels', config.rtp.channels)
             )
         
+        # Parse media configuration
+        if 'media' in config_data:
+            md = config_data['media']
+            config.media = MediaConfig(
+                mode=md.get('mode', config.media.mode),
+                base_url=md.get('base_url', config.media.base_url),
+            )
+
         # Parse lawful_basis configuration
         if 'lawful_basis' in config_data:
             lb_data = config_data['lawful_basis']
@@ -259,6 +301,15 @@ class ConfigManager:
                 purposes=lb_data.get('purposes', config.lawful_basis.purposes),
                 expiration=lb_data.get('expiration', config.lawful_basis.expiration),
                 justification=lb_data.get('justification', config.lawful_basis.justification),
+            )
+
+        # Parse health server configuration
+        if 'health' in config_data:
+            hd = config_data['health']
+            config.health = HealthConfig(
+                enabled=hd.get('enabled', config.health.enabled),
+                host=hd.get('host', config.health.host),
+                port=hd.get('port', config.health.port),
             )
 
         # Parse logging configuration

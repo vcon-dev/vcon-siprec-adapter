@@ -4,6 +4,7 @@ vCon converter that maps SIPREC data to vCon format.
 
 import logging
 import base64
+import hashlib
 import json
 import tempfile
 from typing import Dict, Any, Optional, List
@@ -13,7 +14,7 @@ from vcon import Vcon
 from vcon.party import Party
 from vcon.dialog import Dialog
 from .rtp_handler import RTPHandler
-from .config import LawfulBasisConfig
+from .config import LawfulBasisConfig, MediaConfig
 from .vcon_extensions import (
     add_lawful_basis_attachment,
     add_sip_message_trace,
@@ -26,8 +27,13 @@ logger = logging.getLogger(__name__)
 class VConConverter:
     """Converts SIPREC sessions to vCon format."""
     
-    def __init__(self, lawful_basis_config: Optional[LawfulBasisConfig] = None):
+    def __init__(
+        self,
+        lawful_basis_config: Optional[LawfulBasisConfig] = None,
+        media_config: Optional[MediaConfig] = None,
+    ):
         self.lawful_basis_config = lawful_basis_config or LawfulBasisConfig()
+        self.media_config = media_config or MediaConfig()
 
     def convert_session_to_vcon(self, session_data: Dict[str, Any],
                                rtp_handler: RTPHandler) -> Optional[Vcon]:
@@ -116,10 +122,6 @@ class VConConverter:
                     logger.warning(f"Audio file not found: {audio_file_path}")
                     continue
 
-                audio_data = self._read_audio_file(audio_file_path)
-                if not audio_data:
-                    continue
-
                 mime_type = self._get_audio_mime_type(audio_file_path)
                 duration = self._get_audio_duration(audio_file_path)
 
@@ -139,14 +141,31 @@ class VConConverter:
                     start=start_time,
                     parties=parties_for_stream,
                     mediatype=mime_type,
-                    body=audio_data,
-                    encoding="base64url",
                     filename=Path(audio_file_path).name,
                 )
                 if duration is not None:
                     dialog_kwargs["duration"] = duration
                 if originator is not None:
                     dialog_kwargs["originator"] = originator
+
+                # Body vs URL+content_hash: see MediaConfig.
+                if self.media_config.mode == "external":
+                    url = self._external_media_url(audio_file_path)
+                    content_hash = self._sha512_content_hash(audio_file_path)
+                    if not url or not content_hash:
+                        logger.error(
+                            f"External media mode misconfigured for {audio_file_path}; "
+                            f"skipping dialog"
+                        )
+                        continue
+                    dialog_kwargs["url"] = url
+                    dialog_kwargs["content_hash"] = content_hash
+                else:
+                    audio_data = self._read_audio_file(audio_file_path)
+                    if not audio_data:
+                        continue
+                    dialog_kwargs["body"] = audio_data
+                    dialog_kwargs["encoding"] = "base64url"
 
                 vcon.add_dialog(Dialog(**dialog_kwargs))
 
@@ -257,6 +276,29 @@ class VConConverter:
             )
         except Exception as e:
             logger.error(f"Error adding lawful_basis attachment: {e}")
+
+    def _external_media_url(self, file_path: str) -> Optional[str]:
+        """Compose `base_url + filename` for external-media mode."""
+        base = (self.media_config.base_url or "").rstrip("/")
+        if not base:
+            return None
+        return f"{base}/{Path(file_path).name}"
+
+    def _sha512_content_hash(self, file_path: str) -> Optional[str]:
+        """Return spec-form `sha512-<base64url(unpadded) of digest>`."""
+        try:
+            h = hashlib.sha512()
+            with open(file_path, "rb") as f:
+                for chunk in iter(lambda: f.read(65536), b""):
+                    h.update(chunk)
+            digest = h.digest()
+            # `content_hash` uses unpadded base64url per the speckit
+            # ("sha512-" + base64url-of-digest).
+            b64 = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+            return f"sha512-{b64}"
+        except Exception as e:
+            logger.error(f"Error computing sha512 for {file_path}: {e}")
+            return None
 
     def _read_audio_file(self, file_path: str) -> Optional[str]:
         """Read audio file and return base64url-encoded data (per vCon spec)."""

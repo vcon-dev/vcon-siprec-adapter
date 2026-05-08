@@ -17,14 +17,31 @@ storage:
 
 webhooks:
   enabled: true
+  # When all endpoints fail for a vCon, the JSON + a sidecar metadata file
+  # are written to this directory for later replay. Set to null to disable.
+  dlq_path: "./dlq"
   endpoints:
     - url: "https://api.example.com/vcons"
       headers:
         Authorization: "Bearer your-token-here"
-        Content-Type: "application/json"
       retry_attempts: 3
       timeout: 30
       backoff_factor: 2.0
+      # When set, request bodies are HMAC-SHA256-signed and the digest is
+      # sent as `X-Hub-Signature-256: sha256=<hex>`. Leave null to skip.
+      hmac_secret: null
+
+media:
+  # "inline" embeds audio as base64url in the Dialog body (default,
+  # self-contained but large). "external" emits url + content_hash and
+  # expects audio to be published separately under base_url.
+  mode: "inline"
+  base_url: null  # e.g. "https://media.example.com/recordings"
+
+health:
+  enabled: true
+  host: "0.0.0.0"
+  port: 8080
 
 rtp:
   buffer_size: 65536
