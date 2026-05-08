@@ -65,6 +65,22 @@ class RTPConfig:
 
 
 @dataclass
+class LawfulBasisConfig:
+    """Default lawful_basis attachment for emitted vCons.
+
+    See draft-howe-vcon-lawful-basis. Set `enabled: false` to omit.
+    """
+    enabled: bool = True
+    lawful_basis: str = "legitimate_interests"
+    purposes: List[str] = field(default_factory=lambda: ["recording"])
+    expiration: Optional[str] = None  # ISO 8601 or None for indefinite
+    justification: Optional[str] = (
+        "SIPREC recording captured by network infrastructure; "
+        "Data Controller manages data-subject consent separately."
+    )
+
+
+@dataclass
 class LoggingConfig:
     """Logging configuration settings."""
     level: str = "INFO"
@@ -81,6 +97,7 @@ class Config:
     storage: StorageConfig = field(default_factory=StorageConfig)
     webhooks: WebhookConfig = field(default_factory=WebhookConfig)
     rtp: RTPConfig = field(default_factory=RTPConfig)
+    lawful_basis: LawfulBasisConfig = field(default_factory=LawfulBasisConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
 
 
@@ -233,6 +250,17 @@ class ConfigManager:
                 channels=rtp_data.get('channels', config.rtp.channels)
             )
         
+        # Parse lawful_basis configuration
+        if 'lawful_basis' in config_data:
+            lb_data = config_data['lawful_basis']
+            config.lawful_basis = LawfulBasisConfig(
+                enabled=lb_data.get('enabled', config.lawful_basis.enabled),
+                lawful_basis=lb_data.get('lawful_basis', config.lawful_basis.lawful_basis),
+                purposes=lb_data.get('purposes', config.lawful_basis.purposes),
+                expiration=lb_data.get('expiration', config.lawful_basis.expiration),
+                justification=lb_data.get('justification', config.lawful_basis.justification),
+            )
+
         # Parse logging configuration
         if 'logging' in config_data:
             logging_data = config_data['logging']

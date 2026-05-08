@@ -27,7 +27,7 @@ class SIPRECSRSApp:
     def __init__(self, config: Config):
         self.config = config
         self.sip_server: Optional[SIPRECServer] = None
-        self.vcon_converter = VConConverter()
+        self.vcon_converter = VConConverter(lawful_basis_config=config.lawful_basis)
         self.storage_handler = StorageHandler(config.storage)
         self.webhook_delivery = WebhookDelivery(config.webhooks)
         self.running = False

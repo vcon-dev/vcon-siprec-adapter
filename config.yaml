@@ -37,6 +37,16 @@ rtp:
   sample_rate: 8000
   channels: 1
 
+lawful_basis:
+  enabled: true
+  lawful_basis: "legitimate_interests"  # consent | contract | legal_obligation | vital_interests | public_task | legitimate_interests
+  purposes:
+    - "recording"
+    - "transcription"
+    - "analysis"
+  expiration: null  # ISO 8601 or null for indefinite
+  justification: "SIPREC recording captured by network infrastructure; Data Controller manages data-subject consent separately."
+
 logging:
   level: "INFO"
   file: "./logs/siprec-srs.log"
