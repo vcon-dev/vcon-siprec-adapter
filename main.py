@@ -250,12 +250,10 @@ async def main():
     parser = argparse.ArgumentParser(description="SIPREC SRS to vCon Server")
     parser.add_argument("--config", "-c", help="Path to configuration file")
     parser.add_argument("--env-file", "-e", help="Path to environment file")
-    parser.add_argument("--log-level", "-l", 
+    parser.add_argument("--log-level", "-l",
                        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
                        help="Logging level")
-    parser.add_argument("--daemon", "-d", action="store_true",
-                       help="Run as daemon process")
-    
+
     args = parser.parse_args()
     
     try:
@@ -289,11 +287,6 @@ async def main():
         
         # Create and start application
         app = SIPRECSRSApp(config)
-        
-        if args.daemon:
-            # TODO: Implement daemon mode
-            logging.warning("Daemon mode not yet implemented")
-        
         await app.start()
         
     except KeyboardInterrupt:
