@@ -25,16 +25,6 @@ class SIPRECParser:
             'Recording-Content-Language',
             'Recording-Content-Location',
             'Recording-Content-Range',
-            'Recording-Content-Type',
-            'Recording-Content-Encoding',
-            'Recording-Content-Language',
-            'Recording-Content-Location',
-            'Recording-Content-Range',
-            'Recording-Content-Type',
-            'Recording-Content-Encoding',
-            'Recording-Content-Language',
-            'Recording-Content-Location',
-            'Recording-Content-Range'
         ]
     
     def parse_invite(self, call_info: pj.CallInfo) -> Optional[Dict[str, Any]]:

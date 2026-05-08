@@ -56,28 +56,30 @@ class VConConverter:
             return None
     
     def _add_participants(self, vcon: Vcon, participants: List[Dict[str, Any]]):
-        """Add participants to the vCon."""
+        """Add participants to the vCon.
+
+        Only spec-defined Party fields (name, tel, mailto) are passed to the
+        Party constructor. Non-spec hints (role, domain, uri, internal id)
+        go into `party.meta` so they survive serialization without polluting
+        spec-typed fields.
+        """
         try:
             for participant in participants:
                 party = Party(
-                    name=participant.get('name', ''),
-                    tel=participant.get('tel', ''),
-                    mailto=participant.get('mailto', ''),
-                    role=participant.get('role', 'participant'),
-                    uuid=participant.get('id', '')
+                    name=participant.get('name', '') or None,
+                    tel=participant.get('tel', '') or None,
+                    mailto=participant.get('mailto', '') or None,
                 )
-                
-                # Add custom metadata
-                if participant.get('domain'):
-                    party.meta = party.meta or {}
-                    party.meta['domain'] = participant['domain']
-                
-                if participant.get('uri'):
-                    party.meta = party.meta or {}
-                    party.meta['uri'] = participant['uri']
-                
+
+                meta = {}
+                for key in ('role', 'domain', 'uri', 'id'):
+                    if participant.get(key):
+                        meta[key] = participant[key]
+                if meta:
+                    party.meta = meta
+
                 vcon.add_party(party)
-                
+
         except Exception as e:
             logger.error(f"Error adding participants: {e}")
     
@@ -96,42 +98,65 @@ class VConConverter:
             start_time = session_data.get('start_time', datetime.now(timezone.utc).isoformat())
             end_time = session_data.get('end_time', datetime.now(timezone.utc).isoformat())
             
-            # Add each audio stream as a dialog
-            for stream_id, audio_file_path in audio_files.items():
+            participant_count = len(session_data.get('participants', []))
+            all_party_indices = list(range(participant_count))
+
+            # Sort streams for deterministic dialog ordering / party mapping.
+            for stream_idx, (stream_id, audio_file_path) in enumerate(
+                sorted(audio_files.items())
+            ):
                 if not Path(audio_file_path).exists():
                     logger.warning(f"Audio file not found: {audio_file_path}")
                     continue
-                
-                # Read and encode audio file
+
                 audio_data = self._read_audio_file(audio_file_path)
                 if not audio_data:
                     continue
-                
-                # Determine MIME type based on file extension
+
                 mime_type = self._get_audio_mime_type(audio_file_path)
-                
-                # Create audio dialog
-                dialog = Dialog(
+                duration = self._get_audio_duration(audio_file_path)
+
+                # SIPREC streams are typically per-participant. If stream
+                # count matches participant count, map 1:1; otherwise the
+                # stream is treated as covering all parties (best effort
+                # until the sip_signaling extension carries true mapping).
+                if participant_count and len(audio_files) == participant_count:
+                    parties_for_stream = [stream_idx]
+                    originator = stream_idx
+                else:
+                    parties_for_stream = all_party_indices
+                    originator = 0 if participant_count else None
+
+                dialog_kwargs = dict(
                     type="recording",
                     start=start_time,
-                    parties=list(range(len(session_data.get('participants', [])))),
+                    parties=parties_for_stream,
                     mimetype=mime_type,
                     body=audio_data,
                     encoding="base64url",
-                    filename=Path(audio_file_path).name
+                    filename=Path(audio_file_path).name,
                 )
-                
-                # Add stream metadata
-                dialog.metadata = dialog.metadata or {}
-                dialog.metadata['stream_id'] = stream_id
-                dialog.metadata['source'] = 'rtp_capture'
-                
-                # Add duration if available
-                duration = self._get_audio_duration(audio_file_path)
-                if duration:
-                    dialog.metadata['duration'] = duration
-                
-                vcon.add_dialog(dialog)
+                if duration is not None:
+                    dialog_kwargs["duration"] = duration
+                if originator is not None:
+                    dialog_kwargs["originator"] = originator
+
+                vcon.add_dialog(Dialog(**dialog_kwargs))
+
+                # Stream provenance (RTP capture origin, raw stream id) lives
+                # in an attachment, not on the Dialog object — Dialog has no
+                # `metadata` field in the spec.
+                dialog_index = len(vcon.dialog) - 1
+                vcon.vcon_dict.setdefault("attachments", []).append({
+                    "purpose": "stream_provenance",
+                    "party": parties_for_stream[0] if parties_for_stream else 0,
+                    "dialog": dialog_index,
+                    "encoding": "json",
+                    "body": json.dumps({
+                        "stream_id": stream_id,
+                        "source": "rtp_capture",
+                    }),
+                })
                 
         except Exception as e:
             logger.error(f"Error adding audio dialogs: {e}")
@@ -284,26 +309,37 @@ class VConConverter:
             for i in reversed(dialogs_to_remove):
                 vcon.dialog.pop(i)
             
-            # Add merged audio dialog
             audio_data = self._read_audio_file(merged_file)
             if audio_data:
-                start_time = session_data.get('start_time', datetime.now(timezone.utc).isoformat())
-                
+                start_time = session_data.get(
+                    'start_time', datetime.now(timezone.utc).isoformat()
+                )
+                participant_count = len(session_data.get('participants', []))
+
                 dialog = Dialog(
                     type="recording",
                     start=start_time,
-                    parties=list(range(len(session_data.get('participants', [])))),
+                    parties=list(range(participant_count)),
                     mimetype="audio/wav",
                     body=audio_data,
                     encoding="base64url",
-                    filename=Path(merged_file).name
+                    filename=Path(merged_file).name,
+                    originator=0 if participant_count else None,
                 )
-                
-                dialog.metadata = dialog.metadata or {}
-                dialog.metadata['type'] = 'merged_audio'
-                dialog.metadata['source'] = 'rtp_capture'
-                
+
                 vcon.add_dialog(dialog)
+
+                dialog_index = len(vcon.dialog) - 1
+                vcon.vcon_dict.setdefault("attachments", []).append({
+                    "purpose": "stream_provenance",
+                    "party": 0,
+                    "dialog": dialog_index,
+                    "encoding": "json",
+                    "body": json.dumps({
+                        "kind": "merged_audio",
+                        "source": "rtp_capture",
+                    }),
+                })
             
             # Clean up temporary file
             Path(merged_file).unlink(missing_ok=True)
