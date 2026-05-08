@@ -19,6 +19,8 @@ from siprec_srs.sip_server import SIPRECServer
 from siprec_srs.vcon_converter import VConConverter
 from siprec_srs.storage_handler import StorageHandler
 from siprec_srs.webhook_delivery import WebhookDelivery
+from siprec_srs.health_server import HealthServer
+from siprec_srs.signing import Signer, SigningError
 
 
 class SIPRECSRSApp:
@@ -27,9 +29,39 @@ class SIPRECSRSApp:
     def __init__(self, config: Config):
         self.config = config
         self.sip_server: Optional[SIPRECServer] = None
-        self.vcon_converter = VConConverter()
+        self.vcon_converter = VConConverter(
+            lawful_basis_config=config.lawful_basis,
+            media_config=config.media,
+        )
         self.storage_handler = StorageHandler(config.storage)
         self.webhook_delivery = WebhookDelivery(config.webhooks)
+
+        # Signing is loaded eagerly so missing/invalid keys fail at startup,
+        # not on the first session.
+        self.signer: Optional[Signer] = None
+        if config.signing.enabled:
+            if not config.signing.private_key_path:
+                raise SigningError(
+                    "signing.enabled is true but signing.private_key_path is unset"
+                )
+            password = (
+                config.signing.private_key_password.encode('utf-8')
+                if config.signing.private_key_password else None
+            )
+            self.signer = Signer.from_pem_file(
+                config.signing.private_key_path, password=password
+            )
+            logging.info(f"Signing enabled (key: {config.signing.private_key_path})")
+
+        self.health_server: Optional[HealthServer] = (
+            HealthServer(
+                host=config.health.host,
+                port=config.health.port,
+                webhook_stats_provider=self.webhook_delivery.get_stats,
+            )
+            if config.health.enabled
+            else None
+        )
         self.running = False
         
         # Set up logging
@@ -88,6 +120,10 @@ class SIPRECSRSApp:
             
             # Start webhook delivery
             await self.webhook_delivery.start()
+
+            # Start health/metrics server
+            if self.health_server is not None:
+                await self.health_server.start()
             
             # Start SIP server
             self.sip_server = SIPRECServer(self.config)
@@ -116,6 +152,10 @@ class SIPRECSRSApp:
             if self.sip_server:
                 await self.sip_server.stop()
             
+            # Stop health server
+            if self.health_server is not None:
+                await self.health_server.stop()
+
             # Stop webhook delivery
             await self.webhook_delivery.stop()
             
@@ -152,7 +192,16 @@ class SIPRECSRSApp:
             if not vcon:
                 logging.error(f"Failed to convert session {session.session_id} to vCon")
                 return
-            
+
+            # Sign before storage and webhook delivery so all downstream
+            # consumers see the JWS-wrapped form. Signing mutates in place.
+            if self.signer is not None:
+                try:
+                    self.signer.sign(vcon)
+                except SigningError as e:
+                    logging.error(f"Signing failed for session {session.session_id}: {e}")
+                    return
+
             # Save to local storage
             file_path = self.storage_handler.save_vcon(
                 vcon, session.session_id, session.call_id
@@ -201,12 +250,10 @@ async def main():
     parser = argparse.ArgumentParser(description="SIPREC SRS to vCon Server")
     parser.add_argument("--config", "-c", help="Path to configuration file")
     parser.add_argument("--env-file", "-e", help="Path to environment file")
-    parser.add_argument("--log-level", "-l", 
+    parser.add_argument("--log-level", "-l",
                        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
                        help="Logging level")
-    parser.add_argument("--daemon", "-d", action="store_true",
-                       help="Run as daemon process")
-    
+
     args = parser.parse_args()
     
     try:
@@ -240,11 +287,6 @@ async def main():
         
         # Create and start application
         app = SIPRECSRSApp(config)
-        
-        if args.daemon:
-            # TODO: Implement daemon mode
-            logging.warning("Daemon mode not yet implemented")
-        
         await app.start()
         
     except KeyboardInterrupt:

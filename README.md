@@ -1,78 +1,107 @@
 # SIPREC SRS to vCon Server
 
-A Session Recording Server (SRS) that receives SIPREC recording sessions and converts them into vCon format for standardized conversation storage and analysis.
+A Session Recording Server (SRS) that receives SIPREC recording sessions and
+emits them as **spec-compliant vCons** (IETF `draft-ietf-vcon-vcon-core-02`,
+syntax `0.4.0`).
 
 ## Features
 
-- **SIPREC Protocol Support**: Full RFC 7866 compliance for session recording
-- **Multiple Transport Support**: TCP, UDP, and TLS transport protocols
-- **vCon Conversion**: Automatic conversion of recorded sessions to vCon format
-- **Flexible Storage**: Local filesystem storage with configurable naming
-- **Webhook Delivery**: POST vCons to external APIs with retry logic
-- **Audio Codec Support**: G.711, G.722, Opus, and other common codecs
-- **Concurrent Sessions**: Handle multiple recording sessions simultaneously
+- **SIPREC Protocol Support** — RFC 7866; UDP, TCP, and TLS transports.
+- **Spec-compliant vCon emission** — vcon syntax `0.4.0`, `mediatype`,
+  `base64url` body encoding, ISO-8601 UTC timestamps, attachment vs.
+  analysis vs. dialog placed correctly.
+- **Extension support** — emits structured attachments for the
+  `sip-signaling` extension (call_id, recording_session_id, URIs) and the
+  `lawful_basis` extension (recording consent / legitimate interest).
+- **JWS signing** (optional) — RS256-sign every vCon before storage and
+  delivery using a configured RSA private key.
+- **External-media mode** (optional) — emit `url` + `sha512-<base64url>`
+  `content_hash` instead of inlining audio as base64url.
+- **Pluggable transcription** — `TranscriptionProvider` Protocol places
+  WTF transcripts in `analysis[]` per `draft-howe-vcon-wtf-extension`.
+  Default is no-op; plug in Whisper / Deepgram / etc. without modifying
+  the converter.
+- **Hardened webhook delivery** — per-endpoint HMAC-SHA256 body signing
+  (`X-Hub-Signature-256`), `Idempotency-Key` header (= vCon UUID),
+  exponential-backoff retries, and an optional dead-letter queue (DLQ)
+  for vCons whose every endpoint fails.
+- **Health & metrics** — built-in `/healthz` and Prometheus `/metrics`
+  endpoint exposing webhook-delivery counters.
+- **Local storage** — filesystem with configurable filename pattern.
+- **Audio codec support** — G.711 (μ-law / A-law), G.722, Opus.
+- **Concurrent sessions** — multiple SIPREC sessions in flight at once.
 
 ## Quick Start
 
 ### Prerequisites
 
 - Python 3.8+
-- PJSIP development libraries
-- SSL certificates for TLS support (optional)
+- PJSIP / pjsua2 (only required for live SIPREC capture; tests can run
+  without it — see *Running Tests* below).
+- An RSA private key (PEM) — only if JWS signing is enabled.
 
 ### Installation
 
-1. Clone the repository:
 ```bash
-git clone <repository-url>
+git clone https://github.com/vcon-dev/vcon-siprec-adapter
 cd vcon-siprec-adapter
-```
 
-2. Install dependencies:
-```bash
-# Install PJSIP development libraries (Ubuntu/Debian)
-sudo apt-get install libpjsua2-dev
+# System libraries for pjsua2 (Debian / Ubuntu)
+sudo apt-get install libpjproject-dev
 
-# Install Python dependencies
+# Python dependencies
 pip install -r requirements.txt
-
-# Or install in development mode
-pip install -e .
+# Or, for development:
+pip install -e ".[dev]"
 ```
 
-3. Configure the server:
+> **Note on pjsua2:** the `pjsua2` Python wheel needs a working PJSIP
+> install on the host. If you only intend to run the test suite or
+> exercise the converter / signing / webhook code, you can skip pjsua2
+> entirely — none of those modules import it. See *Running Tests*.
+
+### Configuration
+
+Configure via `config.yaml` (copy and edit) or environment variables.
+A starter `.env.example` is committed.
+
 ```bash
 cp .env.example .env
-# Edit .env with your configuration
+# or
+cp config.yaml config.local.yaml
 ```
 
-4. Run the server:
+### Run the server
+
 ```bash
-python main.py
+python main.py --config config.yaml
+# or, with environment variables:
+python main.py --env-file .env
+# log-level override:
+python main.py --log-level DEBUG
 ```
 
-### Docker Installation (Alternative)
+### Docker
 
 ```bash
-# Build the Docker image
 docker build -t siprec-srs .
 
-# Run with configuration
 docker run -d \
   --name siprec-srs \
   -p 5060:5060/udp \
   -p 5060:5060/tcp \
   -p 5061:5061/tcp \
-  -v $(pwd)/vcons:/app/vcons \
-  -v $(pwd)/config.yaml:/app/config.yaml \
+  -p 8080:8080/tcp \
+  -v "$(pwd)/vcons:/app/vcons" \
+  -v "$(pwd)/dlq:/app/dlq" \
+  -v "$(pwd)/config.yaml:/app/config.yaml:ro" \
   siprec-srs
 ```
 
 ## Configuration
 
-The server can be configured via `config.yaml` or environment variables. See `config.yaml` for all available options.
-
-### Basic Configuration
+All sections in `config.yaml` are optional; each ships with sensible
+defaults. The most commonly tuned blocks:
 
 ```yaml
 server:
@@ -87,123 +116,93 @@ storage:
 
 webhooks:
   enabled: true
+  dlq_path: "./dlq"          # null disables the dead-letter queue
   endpoints:
     - url: "https://api.example.com/vcons"
       headers:
         Authorization: "Bearer your-token"
+      retry_attempts: 3
+      timeout: 30
+      backoff_factor: 2.0
+      hmac_secret: null      # set to enable X-Hub-Signature-256
+
+media:
+  mode: "inline"             # "inline" | "external"
+  base_url: null             # required when mode == "external"
+
+lawful_basis:
+  enabled: true
+  lawful_basis: "legitimate_interests"
+  purposes: ["recording", "transcription", "analysis"]
+
+signing:
+  enabled: false
+  private_key_path: null     # PEM path; RS256 only
+  private_key_password: null
+
+health:
+  enabled: true
+  host: "0.0.0.0"
+  port: 8080
 ```
 
-## Usage
-
-### Starting the Server
-
-```bash
-# Using config file
-python main.py --config config.yaml
-
-# Using environment variables
-python main.py --env-file .env
-
-# With custom log level
-python main.py --log-level DEBUG
-```
-
-### Testing with SIPREC Client
-
-The server accepts SIPREC INVITE requests on the configured ports. A typical SIPREC INVITE looks like:
-
-```
-INVITE sip:recorder@your-server.com:5060 SIP/2.0
-Via: SIP/2.0/UDP client.example.com:5060
-From: <sip:client@example.com>;tag=abc123
-To: <sip:recorder@your-server.com>
-Call-ID: call-123@example.com
-CSeq: 1 INVITE
-Recording-Session-ID: session-456
-Content-Type: application/sdp
-
-v=0
-o=client 123 456 IN IP4 192.168.1.100
-s=Session Recording
-c=IN IP4 192.168.1.100
-t=0 0
-m=audio 5004 RTP/AVP 0 8
-a=rtpmap:0 PCMU/8000
-a=rtpmap:8 PCMA/8000
-```
-
-### Testing with SIPp
-
-You can use SIPp to test the server:
-
-```bash
-# Install SIPp
-sudo apt-get install sipp
-
-# Send a test SIPREC INVITE
-sipp -sf test_siprec.xml your-server.com:5060
-```
-
-Create `test_siprec.xml`:
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<scenario name="SIPREC Test">
-  <send>
-    <![CDATA[
-      INVITE sip:recorder@[remote_ip]:[remote_port] SIP/2.0
-      Via: SIP/2.0/UDP [local_ip]:[local_port];branch=z9hG4bK[call_id]
-      From: <sip:test@[local_ip]:[local_port]>;tag=[call_id]
-      To: <sip:recorder@[remote_ip]:[remote_port]>
-      Call-ID: [call_id]
-      CSeq: 1 INVITE
-      Recording-Session-ID: test-session-[call_id]
-      Content-Type: application/sdp
-      Content-Length: [len]
-
-      v=0
-      o=test 123 456 IN IP4 [local_ip]
-      s=Test Recording
-      c=IN IP4 [local_ip]
-      t=0 0
-      m=audio 5004 RTP/AVP 0
-      a=rtpmap:0 PCMU/8000
-    ]]>
-  </send>
-  <recv response="200" />
-  <send>BYE</send>
-  <recv response="200" />
-</scenario>
-```
+See `config.yaml` in the repo root for the full annotated reference.
 
 ## Generated vCon Format
 
-The server generates vCon files with the following structure:
+A typical signed vCon emitted by this server looks like the following.
+Before signing, the same payload appears at the top level — after
+signing, it's wrapped in a JWS form (`payload` + `signatures`).
 
 ```json
 {
-  "vcon": "0.0.1",
-  "uuid": "generated-uuid",
-  "created_at": "2023-01-01T12:00:00Z",
+  "vcon": "0.4.0",
+  "uuid": "019e08c5-3065-868f-9dd8-dd37220d739c",
+  "created_at": "2026-05-08T12:00:00+00:00",
+  "extensions": ["sip-signaling", "lawful_basis"],
   "parties": [
-    {
-      "tel": "+1234567890",
-      "name": "Caller",
-      "role": "caller"
-    },
-    {
-      "tel": "+1987654321", 
-      "name": "Callee",
-      "role": "callee"
-    }
+    { "tel": "+1234567890", "name": "Alice" },
+    { "tel": "+1987654321", "name": "Bob" }
   ],
   "dialog": [
     {
       "type": "recording",
-      "start": "2023-01-01T12:00:00Z",
-      "parties": [0, 1],
-      "mimetype": "audio/wav",
-      "body": "base64-encoded-audio-data",
-      "encoding": "base64"
+      "start": "2026-05-08T12:00:00+00:00",
+      "parties": [0],
+      "originator": 0,
+      "mediatype": "audio/wav",
+      "duration": 12.34,
+      "filename": "stream_0.wav",
+      "encoding": "base64url",
+      "body": "UklGRiQ...",
+      "sip_call_id": "call-123@example.com"
+    }
+  ],
+  "attachments": [
+    {
+      "purpose": "session_metadata",
+      "party": 0, "dialog": 0,
+      "encoding": "json",
+      "body": "{\"call_id\":\"call-123@example.com\", ... }"
+    },
+    {
+      "purpose": "sip-message-trace",
+      "party": 0, "dialog": 0,
+      "mediatype": "application/json",
+      "encoding": "json",
+      "body": "{\"call_id\":\"call-123@example.com\", ... }"
+    },
+    {
+      "purpose": "stream_provenance",
+      "party": 0, "dialog": 0,
+      "encoding": "json",
+      "body": "{\"stream_id\":\"stream_0\",\"source\":\"rtp_capture\"}"
+    },
+    {
+      "type": "lawful_basis",
+      "party": 0, "dialog": 0,
+      "encoding": "json",
+      "body": "{\"lawful_basis\":\"legitimate_interests\", ...}"
     }
   ],
   "tags": {
@@ -214,64 +213,108 @@ The server generates vCon files with the following structure:
 }
 ```
 
+Notes on the spec-defined exceptions:
+- `lawful_basis` attachments use `type:` (not `purpose:`), as defined by
+  `draft-howe-vcon-lawful-basis`.
+- Transcripts (when a `TranscriptionProvider` is configured) appear in
+  `analysis[]`, **not** `attachments[]`, per `draft-howe-vcon-wtf-extension`.
+- External-media mode replaces the dialog `body` + `encoding` with `url` +
+  `content_hash` of the form `sha512-<base64url-unpadded(digest)>`.
+
+### Verifying a signed vCon
+
+```python
+from vcon import Vcon
+from cryptography.hazmat.primitives import serialization
+
+vcon = Vcon.build_from_json(open("recording.vcon.json").read())
+public_key_pem = open("vcon-signing.pub.pem", "rb").read()
+assert vcon.verify(public_key_pem) is True
+```
+
+### Verifying a webhook signature (receiver side)
+
+```python
+import hmac, hashlib
+def verify(secret: str, body: bytes, header: str) -> bool:
+    expected = "sha256=" + hmac.new(
+        secret.encode(), body, hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(expected, header or "")
+```
+
+The `Idempotency-Key` header is set to the vCon UUID, so receivers can
+dedupe retries and DLQ replays safely.
+
+## Testing with SIPp
+
+```bash
+sudo apt-get install sipp
+sipp -sf test_siprec.xml your-server.com:5060
+```
+
+See [`tests/`](tests/) for fixture-driven examples.
+
+## Health and metrics
+
+When `health.enabled: true`, the server listens on `:8080` and exposes:
+
+- `GET /healthz` — JSON `{"status": "ok", "timestamp": "..."}`.
+- `GET /metrics` — Prometheus text format with counters
+  `siprec_webhook_total_attempts`, `siprec_webhook_successful`,
+  `siprec_webhook_failed`, `siprec_webhook_retries`.
+
 ## API Reference
 
 ### Command Line Options
 
-- `--config FILE`: Path to YAML configuration file
-- `--env-file FILE`: Path to environment file
-- `--log-level LEVEL`: Logging level (DEBUG, INFO, WARNING, ERROR)
-- `--daemon`: Run as daemon process
+- `--config FILE` — path to YAML configuration file
+- `--env-file FILE` — path to environment file
+- `--log-level LEVEL` — `DEBUG` | `INFO` | `WARNING` | `ERROR`
 
 ### Configuration Options
 
-See `config.yaml` for complete configuration reference.
+See `config.yaml` for the complete reference.
 
 ## Development
 
 ### Running Tests
 
+The full test suite has **66 tests** that run without `pjsua2`:
+
 ```bash
-# Run all tests
-pytest tests/
-
-# Run with coverage
-pytest --cov=siprec_srs tests/
-
-# Run specific test file
-pytest tests/test_vcon_converter.py
+# Quick path: a venv that doesn't need PJSIP system libraries.
+python3.12 -m venv .venv
+.venv/bin/pip install vcon pyyaml aiohttp aiofiles structlog pydub \
+    pytest pytest-asyncio pytest-aiohttp cryptography
+.venv/bin/python -m pytest tests/ --ignore=tests/test_integration.py
 ```
+
+Coverage:
+
+```bash
+.venv/bin/python -m pytest --cov=siprec_srs tests/ --ignore=tests/test_integration.py
+```
+
+`tests/test_integration.py` is the only test that requires a running SIP
+stack; everything else (converter, extensions, signing, webhook delivery,
+external media, health server, transcription) runs offline.
 
 ### Code Formatting
 
 ```bash
-# Format code
 black siprec_srs/ tests/
-
-# Check code style
 flake8 siprec_srs/ tests/
-
-# Type checking
 mypy siprec_srs/
-```
-
-### Development Setup
-
-```bash
-# Install in development mode
-pip install -e .
-
-# Install development dependencies
-pip install -e ".[dev]"
-
-# Run pre-commit hooks (if configured)
-pre-commit install
 ```
 
 ## License
 
-[License information]
+MIT — see [`LICENSE`](LICENSE).
 
 ## Contributing
 
-[Contributing guidelines]
+Issues and pull requests are welcome at
+<https://github.com/vcon-dev/vcon-siprec-adapter>. Please run
+`pytest tests/ --ignore=tests/test_integration.py` and `black` before
+opening a PR.

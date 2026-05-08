@@ -20,12 +20,11 @@ if requirements_file.exists():
 setup(
     name="siprec-srs-vcon",
     version="1.0.0",
-    author="SIPREC SRS Team",
-    author_email="team@siprec-srs.com",
-    description="SIPREC Session Recording Server that converts SIP conversations to vCon format",
+    description="SIPREC Session Recording Server that converts SIP conversations to spec-compliant vCon (draft-ietf-vcon-vcon-core-02) format",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/your-org/vcon-siprec-adapter",
+    url="https://github.com/vcon-dev/vcon-siprec-adapter",
+    license="MIT",
     packages=find_packages(),
     classifiers=[
         "Development Status :: 4 - Beta",
@@ -54,8 +53,11 @@ setup(
         ],
     },
     entry_points={
+        # main.py lives at the repo root, not inside the siprec_srs/
+        # package, and exposes an async `main()` that needs asyncio.run.
+        # The `siprec-srs` console script wraps that for shell users.
         "console_scripts": [
-            "siprec-srs=siprec_srs.main:main",
+            "siprec-srs=siprec_srs.cli:run",
         ],
     },
     include_package_data=True,
