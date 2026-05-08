@@ -20,6 +20,7 @@ from siprec_srs.vcon_converter import VConConverter
 from siprec_srs.storage_handler import StorageHandler
 from siprec_srs.webhook_delivery import WebhookDelivery
 from siprec_srs.health_server import HealthServer
+from siprec_srs.signing import Signer, SigningError
 
 
 class SIPRECSRSApp:
@@ -34,6 +35,24 @@ class SIPRECSRSApp:
         )
         self.storage_handler = StorageHandler(config.storage)
         self.webhook_delivery = WebhookDelivery(config.webhooks)
+
+        # Signing is loaded eagerly so missing/invalid keys fail at startup,
+        # not on the first session.
+        self.signer: Optional[Signer] = None
+        if config.signing.enabled:
+            if not config.signing.private_key_path:
+                raise SigningError(
+                    "signing.enabled is true but signing.private_key_path is unset"
+                )
+            password = (
+                config.signing.private_key_password.encode('utf-8')
+                if config.signing.private_key_password else None
+            )
+            self.signer = Signer.from_pem_file(
+                config.signing.private_key_path, password=password
+            )
+            logging.info(f"Signing enabled (key: {config.signing.private_key_path})")
+
         self.health_server: Optional[HealthServer] = (
             HealthServer(
                 host=config.health.host,
@@ -173,7 +192,16 @@ class SIPRECSRSApp:
             if not vcon:
                 logging.error(f"Failed to convert session {session.session_id} to vCon")
                 return
-            
+
+            # Sign before storage and webhook delivery so all downstream
+            # consumers see the JWS-wrapped form. Signing mutates in place.
+            if self.signer is not None:
+                try:
+                    self.signer.sign(vcon)
+                except SigningError as e:
+                    logging.error(f"Signing failed for session {session.session_id}: {e}")
+                    return
+
             # Save to local storage
             file_path = self.storage_handler.save_vcon(
                 vcon, session.session_id, session.call_id

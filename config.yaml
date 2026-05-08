@@ -38,6 +38,13 @@ media:
   mode: "inline"
   base_url: null  # e.g. "https://media.example.com/recordings"
 
+signing:
+  # When enabled, vCons are JWS-signed in place after extension attachments
+  # are added and before storage / webhook delivery. RS256 only.
+  enabled: false
+  private_key_path: null  # e.g. "/etc/ssl/private/vcon-signing.pem"
+  private_key_password: null
+
 health:
   enabled: true
   host: "0.0.0.0"

@@ -103,6 +103,21 @@ class LawfulBasisConfig:
 
 
 @dataclass
+class SigningConfig:
+    """JWS signing for emitted vCons.
+
+    When `enabled: true`, every vCon is signed in place after all extension
+    attachments are added and before storage / webhook delivery, using the
+    RSA private key at `private_key_path`. RS256 JWS is the only algorithm
+    the upstream `vcon` lib supports today.
+    """
+    enabled: bool = False
+    private_key_path: Optional[str] = None
+    # Optional symmetric password protecting the PEM file (utf-8 string).
+    private_key_password: Optional[str] = None
+
+
+@dataclass
 class HealthConfig:
     """Configuration for the /healthz + /metrics HTTP endpoint."""
     enabled: bool = True
@@ -129,6 +144,7 @@ class Config:
     rtp: RTPConfig = field(default_factory=RTPConfig)
     media: MediaConfig = field(default_factory=MediaConfig)
     lawful_basis: LawfulBasisConfig = field(default_factory=LawfulBasisConfig)
+    signing: SigningConfig = field(default_factory=SigningConfig)
     health: HealthConfig = field(default_factory=HealthConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
 
@@ -301,6 +317,15 @@ class ConfigManager:
                 purposes=lb_data.get('purposes', config.lawful_basis.purposes),
                 expiration=lb_data.get('expiration', config.lawful_basis.expiration),
                 justification=lb_data.get('justification', config.lawful_basis.justification),
+            )
+
+        # Parse signing configuration
+        if 'signing' in config_data:
+            sd = config_data['signing']
+            config.signing = SigningConfig(
+                enabled=sd.get('enabled', config.signing.enabled),
+                private_key_path=sd.get('private_key_path', config.signing.private_key_path),
+                private_key_password=sd.get('private_key_password', config.signing.private_key_password),
             )
 
         # Parse health server configuration

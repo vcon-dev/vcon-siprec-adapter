@@ -15,6 +15,11 @@ from vcon.party import Party
 from vcon.dialog import Dialog
 from .rtp_handler import RTPHandler
 from .config import LawfulBasisConfig, MediaConfig
+from .transcription import (
+    NoopTranscriptionProvider,
+    TranscriptionProvider,
+    add_transcription_analysis,
+)
 from .vcon_extensions import (
     add_lawful_basis_attachment,
     add_sip_message_trace,
@@ -31,9 +36,13 @@ class VConConverter:
         self,
         lawful_basis_config: Optional[LawfulBasisConfig] = None,
         media_config: Optional[MediaConfig] = None,
+        transcription_provider: Optional[TranscriptionProvider] = None,
     ):
         self.lawful_basis_config = lawful_basis_config or LawfulBasisConfig()
         self.media_config = media_config or MediaConfig()
+        self.transcription_provider: TranscriptionProvider = (
+            transcription_provider or NoopTranscriptionProvider()
+        )
 
     def convert_session_to_vcon(self, session_data: Dict[str, Any],
                                rtp_handler: RTPHandler) -> Optional[Vcon]:
@@ -183,7 +192,16 @@ class VConConverter:
                         "source": "rtp_capture",
                     }),
                 })
-                
+
+                # Optional transcription via pluggable provider. The Noop
+                # default returns False here without touching the vcon.
+                add_transcription_analysis(
+                    vcon.vcon_dict,
+                    provider=self.transcription_provider,
+                    dialog_index=dialog_index,
+                    audio_path=audio_file_path,
+                )
+
         except Exception as e:
             logger.error(f"Error adding audio dialogs: {e}")
     
