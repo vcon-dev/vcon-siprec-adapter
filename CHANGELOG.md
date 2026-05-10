@@ -4,7 +4,36 @@ All notable changes to this project are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project loosely follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] — branch `refactor/phase1-spec-compliance`
+## [Unreleased]
+
+### 2026-05-10 — Phase 5 (post-merge speckit re-audit)
+
+Re-audit against the 2026-05-07 speckit refresh (which verified spec
+alignment with vcon-lib v0.9.1) surfaced five issues caused by
+vcon-library quirks. All five fixed.
+
+- **Tags attachment compliance:** `Vcon.add_tag()` emits a
+  `purpose: "tags"` attachment without the `party` / `dialog` indices
+  that draft-02 §4.4 REQUIRES. Replaced the five `add_tag()` calls with
+  a `_add_tags_attachment()` helper that emits `party: 0`, `dialog: 0`,
+  `encoding: "json"`, and a JSON-stringified object body (lib emitted
+  an array of `"key:value"` strings).
+- **Dialog default-strip extended:** `_strip_default_empty_fields` now
+  also removes lib-emitted empty `metadata: {}` and `meta: {}` keys
+  from every Dialog. `metadata` isn't a spec Dialog field; `meta` is
+  documented as Party-extension-only.
+- **Dialog `session_id` populated:** every recording dialog now carries
+  `session_id: {local: <recording-session-id>, remote: <call-id>}` per
+  draft-02 / RFC 7989 §5. Omitted when `recording_session_id` is empty.
+- **Transcription analysis carries `mediatype`:** speckit Analysis
+  Object lists `mediatype` as recommended; `add_transcription_analysis`
+  now sets it to `"application/json"`.
+
+6 new tests added; 72 passing total.
+
+---
+
+## Phases 1–4 — branch `refactor/phase1-spec-compliance`
 
 A four-phase refactor bringing the adapter into compliance with
 `draft-ietf-vcon-vcon-core-02` (vcon syntax `0.4.0`) and adding the

@@ -116,6 +116,111 @@ class TestSpecCompliance:
             assert "uuid" not in party_dict
 
 
+class TestTagsAttachment:
+    """Speckit Tags Convention: purpose=tags, party=0, dialog=0,
+    encoding=json, body=JSON-stringified object."""
+
+    def setup_method(self):
+        self.converter = VConConverter()
+
+    def test_tags_attachment_present_with_indices(self):
+        vcon = self.converter.convert_session_to_vcon(
+            _session_data(), _empty_rtp_handler()
+        )
+        tags = [
+            a for a in vcon.vcon_dict["attachments"]
+            if a.get("purpose") == "tags"
+        ]
+        assert len(tags) == 1
+        # draft-02 §4.4: party and dialog REQUIRED on every attachment.
+        assert tags[0]["party"] == 0
+        assert tags[0]["dialog"] == 0
+        assert tags[0]["encoding"] == "json"
+
+    def test_tags_body_is_json_object_string(self):
+        vcon = self.converter.convert_session_to_vcon(
+            _session_data(), _empty_rtp_handler()
+        )
+        tags = next(
+            a for a in vcon.vcon_dict["attachments"]
+            if a.get("purpose") == "tags"
+        )
+        # Body must be a JSON-stringified object (per speckit example),
+        # not a list of "k:v" strings (lib's add_tag default).
+        assert isinstance(tags["body"], str)
+        body = json.loads(tags["body"])
+        assert isinstance(body, dict)
+        assert body["source"] == "siprec"
+        assert body["call_id"] == "call_456@example.com"
+
+    def test_tags_drops_empty_values(self):
+        vcon = self.converter.convert_session_to_vcon(
+            _session_data(recording_session_id=''), _empty_rtp_handler()
+        )
+        tags = next(
+            a for a in vcon.vcon_dict["attachments"]
+            if a.get("purpose") == "tags"
+        )
+        body = json.loads(tags["body"])
+        assert "recording_session_id" not in body
+
+
+class TestDialogDefaultStrip:
+    """Lib emits empty `metadata` and `meta` on Dialog by default; spec
+    has neither field on Dialog (metadata) or limits it to Party (meta)."""
+
+    def setup_method(self):
+        self.converter = VConConverter()
+
+    def test_no_empty_metadata_or_meta_on_dialog(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            wav = Path(tmp) / "stream_0.wav"
+            _make_wav(wav, payload_bytes=8)
+            handler = _rtp_handler_with_audio({"stream_0": str(wav)})
+            vcon = self.converter.convert_session_to_vcon(
+                _session_data(), handler
+            )
+            for d in vcon.vcon_dict["dialog"]:
+                assert d.get("metadata") != {}
+                assert d.get("meta") != {}
+
+
+class TestDialogSessionId:
+    """draft-02 / RFC 7989 §5: Dialog `session_id` is `{local, remote}`.
+    For SIPREC, local = recording-session-id, remote = SIP Call-ID."""
+
+    def setup_method(self):
+        self.converter = VConConverter()
+
+    def test_session_id_populated_on_recording_dialogs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            wav = Path(tmp) / "stream_0.wav"
+            _make_wav(wav, payload_bytes=8)
+            handler = _rtp_handler_with_audio({"stream_0": str(wav)})
+            vcon = self.converter.convert_session_to_vcon(
+                _session_data(), handler
+            )
+            recordings = [d for d in vcon.dialog if d.get("type") == "recording"]
+            assert recordings
+            for d in recordings:
+                assert d["session_id"] == {
+                    "local": "rec_789",
+                    "remote": "call_456@example.com",
+                }
+
+    def test_session_id_omitted_when_no_recording_session_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            wav = Path(tmp) / "stream_0.wav"
+            _make_wav(wav, payload_bytes=8)
+            handler = _rtp_handler_with_audio({"stream_0": str(wav)})
+            vcon = self.converter.convert_session_to_vcon(
+                _session_data(recording_session_id=''), handler
+            )
+            for d in vcon.dialog:
+                if d.get("type") == "recording":
+                    assert "session_id" not in d
+
+
 class TestSessionMetadataAttachment:
     def setup_method(self):
         self.converter = VConConverter()

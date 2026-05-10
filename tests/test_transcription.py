@@ -130,6 +130,8 @@ class TestAddTranscriptionAnalysis:
         # body must be a JSON-encoded string per core spec.
         assert isinstance(analysis["body"], str)
         assert json.loads(analysis["body"]) == wtf_doc
+        # Speckit Analysis Object lists `mediatype` as recommended.
+        assert analysis["mediatype"] == "application/json"
 
     def test_audio_path_passed_to_provider(self):
         provider = StubProvider({"transcript": {"text": "x"}})

@@ -91,6 +91,7 @@ def add_transcription_analysis(
         "vendor": provider.vendor,
         "product": provider.product,
         "schema": WTF_SCHEMA_URL,
+        "mediatype": "application/json",
         "dialog": [dialog_index],
         "encoding": "json",
         "body": json.dumps(wtf_doc),

@@ -52,11 +52,17 @@ class VConConverter:
             # build_new() does not set the syntax version; spec requires "0.4.0"
             vcon.vcon_dict["vcon"] = "0.4.0"
 
-            vcon.add_tag("source", "siprec")
-            vcon.add_tag("call_id", session_data.get('call_id', ''))
-            vcon.add_tag("recording_session_id", session_data.get('recording_session_id', ''))
-            vcon.add_tag("session_id", session_data.get('session_id', ''))
-            vcon.add_tag("conversion_timestamp", datetime.now(timezone.utc).isoformat())
+            # Tags attachment built directly to satisfy draft-02 §4.4:
+            # `party` and `dialog` are REQUIRED (Vcon.add_tag emits neither),
+            # and the speckit Tags Convention prescribes a JSON-stringified
+            # object body (the lib emits an array of "key:value" strings).
+            self._add_tags_attachment(vcon, {
+                "source": "siprec",
+                "call_id": session_data.get('call_id', ''),
+                "recording_session_id": session_data.get('recording_session_id', ''),
+                "session_id": session_data.get('session_id', ''),
+                "conversion_timestamp": datetime.now(timezone.utc).isoformat(),
+            })
 
             self._add_participants(vcon, session_data.get('participants', []))
             self._add_audio_dialogs(vcon, session_data, rtp_handler)
@@ -237,17 +243,43 @@ class VConConverter:
         except Exception as e:
             logger.error(f"Error adding session metadata attachment: {e}")
     
+    def _add_tags_attachment(self, vcon: Vcon, tags: Dict[str, str]):
+        """Append a draft-02-compliant tags attachment.
+
+        See speckit "Tags Convention": purpose=tags, party=0, dialog=0,
+        encoding=json, body=JSON-stringified object.
+        """
+        # Drop empty values so consumers don't see "key": "".
+        clean = {k: v for k, v in tags.items() if v not in (None, "")}
+        vcon.vcon_dict.setdefault("attachments", []).append({
+            "purpose": "tags",
+            "party": 0,
+            "dialog": 0,
+            "encoding": "json",
+            "body": json.dumps(clean),
+        })
+
     def _strip_default_empty_fields(self, vcon: Vcon):
         """Remove lib-emitted default empty fields the spec discourages.
 
-        Per the speckit: `group` is reserved (drop empty list), `redacted`
-        should be omitted when empty (don't emit `{}`).
+        Per the speckit:
+        * `group` is reserved (drop empty list).
+        * `redacted` should be omitted when empty (don't emit `{}`).
+        * Dialog `metadata` is not a spec field at all; lib serializes
+          empty `{}` by default — strip.
+        * Dialog `meta` is documented as a Party-extension-only field;
+          strip when empty so it doesn't masquerade as Dialog data.
         """
         d = vcon.vcon_dict
         if d.get("group") == []:
             d.pop("group", None)
         if d.get("redacted") == {}:
             d.pop("redacted", None)
+        for dialog in d.get("dialog", []):
+            if dialog.get("metadata") == {}:
+                dialog.pop("metadata", None)
+            if dialog.get("meta") == {}:
+                dialog.pop("meta", None)
 
     def _add_sip_signaling(self, vcon: Vcon, session_data: Dict[str, Any]):
         """Emit sip-signaling extension data (draft-howe-vcon-sip-signaling).
@@ -271,9 +303,19 @@ class VConConverter:
             )
 
             # Stamp Dialog Object extension parameters on every recording.
+            recording_session_id = session_data.get('recording_session_id') or ''
             for dialog in vcon.dialog:
                 if dialog.get('type') == 'recording':
                     annotate_dialog_with_sip(dialog, sip_call_id=call_id)
+                    # draft-02 / speckit §2 item 6: Dialog session_id is
+                    # `{local: UUID, remote: UUID}` per RFC 7989 §5. For
+                    # SIPREC the Recording-Session-ID is the local
+                    # identifier and the SIP Call-ID is the remote.
+                    if recording_session_id:
+                        dialog["session_id"] = {
+                            "local": recording_session_id,
+                            "remote": call_id,
+                        }
 
         except Exception as e:
             logger.error(f"Error adding sip_signaling extension data: {e}")
