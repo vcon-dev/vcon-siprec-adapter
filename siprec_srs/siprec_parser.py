@@ -1,290 +1,164 @@
 """
-SIPREC metadata parser for extracting information from SIP headers and SDP.
+SIPREC INVITE parsing: SDP media description + rs-metadata (RFC 7865).
+
+Operates on the raw INVITE body (a `multipart/mixed` of `application/sdp` and
+`application/rs-metadata+xml`), which is where SIPREC actually carries its
+data. This replaces the earlier pjsua2-CallInfo approach, which could not
+reach the body at all.
 """
 
-import re
 import logging
-from typing import Dict, Any, Optional, List
-from datetime import datetime, timezone
-import pjsua2 as pj
+import re
+import xml.etree.ElementTree as ET
+from typing import Dict, Any, List, Optional
 
 logger = logging.getLogger(__name__)
 
+# RTP static payload type -> codec name (RFC 3551), for labelling.
+_STATIC_PT = {0: "PCMU", 8: "PCMA", 9: "G722"}
+
+
+def split_multipart(body: bytes, content_type: str) -> Dict[str, bytes]:
+    """Split a multipart/mixed body into {subtype: part_body}.
+
+    Keys are the lowercased MIME subtype without params, e.g. "sdp",
+    "rs-metadata+xml". A non-multipart body is returned under a best-effort
+    key derived from `content_type`.
+    """
+    m = re.search(r'boundary="?([^";]+)"?', content_type, re.IGNORECASE)
+    if not m:
+        subtype = _subtype(content_type)
+        return {subtype: body} if body else {}
+
+    boundary = ("--" + m.group(1)).encode()
+    parts: Dict[str, bytes] = {}
+    for chunk in body.split(boundary):
+        chunk = chunk.strip(b"\r\n")
+        if not chunk or chunk == b"--":
+            continue
+        # Split part headers from part body on the first blank line.
+        if b"\r\n\r\n" in chunk:
+            head, part_body = chunk.split(b"\r\n\r\n", 1)
+        elif b"\n\n" in chunk:
+            head, part_body = chunk.split(b"\n\n", 1)
+        else:
+            continue
+        ctype = ""
+        for line in head.decode("utf-8", "replace").splitlines():
+            if line.lower().startswith("content-type:"):
+                ctype = line.split(":", 1)[1].strip()
+                break
+        parts[_subtype(ctype)] = part_body.strip(b"\r\n")
+    return parts
+
+
+def _subtype(content_type: str) -> str:
+    """`application/rs-metadata+xml; charset=..` -> `rs-metadata+xml`."""
+    ct = (content_type or "").split(";", 1)[0].strip().lower()
+    return ct.split("/", 1)[1] if "/" in ct else ct
+
+
+def _localname(tag: str) -> str:
+    """Strip an XML namespace: `{urn:...}participant` -> `participant`."""
+    return tag.split("}", 1)[1] if "}" in tag else tag
+
 
 class SIPRECParser:
-    """Parser for SIPREC metadata from SIP messages and SDP."""
-    
-    def __init__(self):
-        self.siprec_headers = [
-            'Recording-Session-ID',
-            'Recording-URI',
-            'Recording-Content-Type',
-            'Recording-Content-Disposition',
-            'Recording-Content-Encoding',
-            'Recording-Content-Length',
-            'Recording-Content-Language',
-            'Recording-Content-Location',
-            'Recording-Content-Range',
-        ]
-    
-    def parse_invite(self, call_info: pj.CallInfo) -> Optional[Dict[str, Any]]:
-        """Parse SIPREC metadata from incoming INVITE."""
-        try:
-            siprec_data = {
-                'session_id': call_info.callId,
-                'call_id': call_info.callId,
-                'recording_session_id': '',
-                'participants': [],
-                'media_streams': [],
-                'timestamp': datetime.now(timezone.utc).isoformat(),
-                'remote_uri': call_info.remoteUri,
-                'local_uri': call_info.localUri
-            }
-            
-            # Parse SIP headers
-            self._parse_sip_headers(call_info, siprec_data)
-            
-            # Parse SDP
-            self._parse_sdp(call_info, siprec_data)
-            
-            # Extract participants from headers and SDP
-            self._extract_participants(call_info, siprec_data)
-            
-            return siprec_data
-            
-        except Exception as e:
-            logger.error(f"Error parsing SIPREC INVITE: {e}")
-            return None
-    
-    def _parse_sip_headers(self, call_info: pj.CallInfo, siprec_data: Dict[str, Any]):
-        """Parse SIPREC-specific headers."""
-        try:
-            # Get raw SIP message (this is a simplified approach)
-            # In a real implementation, you'd need to access the raw SIP message
-            # For now, we'll extract what we can from the call info
-            
-            # Recording Session ID (most important header)
-            if hasattr(call_info, 'recordingSessionId'):
-                siprec_data['recording_session_id'] = call_info.recordingSessionId
-            
-            # Extract from remote URI if it contains session info
-            remote_uri = call_info.remoteUri
-            if 'session=' in remote_uri:
-                match = re.search(r'session=([^;&]+)', remote_uri)
-                if match:
-                    siprec_data['recording_session_id'] = match.group(1)
-            
-            # Extract from local URI
-            local_uri = call_info.localUri
-            if 'recorder' in local_uri.lower():
-                siprec_data['recording_uri'] = local_uri
-            
-        except Exception as e:
-            logger.warning(f"Error parsing SIP headers: {e}")
-    
-    def _parse_sdp(self, call_info: pj.CallInfo, siprec_data: Dict[str, Any]):
-        """Parse SDP information."""
-        try:
-            media_streams = []
-            
-            for media_idx in range(call_info.media.size()):
-                media_info = call_info.media[media_idx]
-                
-                if media_info.type == pj.PJMEDIA_TYPE_AUDIO:
-                    stream_info = {
-                        'type': 'audio',
-                        'index': media_idx,
-                        'local_port': media_info.localRtpPort,
-                        'remote_port': media_info.remoteRtpPort,
-                        'codec': media_info.audioCodecName,
-                        'clock_rate': media_info.audioClockRate,
-                        'channels': media_info.audioChannelCount,
-                        'status': media_info.status
+    """Parse SDP and rs-metadata out of a SIPREC INVITE."""
+
+    def parse_sdp(self, sdp: str) -> List[Dict[str, Any]]:
+        """Return one dict per m=audio line: index, port, connection, codecs."""
+        streams: List[Dict[str, Any]] = []
+        session_conn = None
+        current: Optional[Dict[str, Any]] = None
+
+        for raw in sdp.replace("\r\n", "\n").split("\n"):
+            line = raw.strip()
+            if not line or "=" not in line:
+                continue
+            typ, val = line.split("=", 1)
+            if typ == "c" and current is None:
+                session_conn = self._conn_addr(val)
+            elif typ == "m":
+                fields = val.split()
+                if len(fields) >= 4 and fields[0] == "audio":
+                    current = {
+                        "index": len(streams),
+                        "type": "audio",
+                        "remote_port": int(fields[1]) if fields[1].isdigit() else 0,
+                        "connection": session_conn,
+                        "payload_types": [int(p) for p in fields[3:] if p.isdigit()],
+                        "rtpmap": {},
                     }
-                    media_streams.append(stream_info)
-                
-                elif media_info.type == pj.PJMEDIA_TYPE_VIDEO:
-                    stream_info = {
-                        'type': 'video',
-                        'index': media_idx,
-                        'local_port': media_info.localRtpPort,
-                        'remote_port': media_info.remoteRtpPort,
-                        'codec': media_info.videoCodecName,
-                        'width': media_info.videoWidth,
-                        'height': media_info.videoHeight,
-                        'fps': media_info.videoFps,
-                        'status': media_info.status
+                    streams.append(current)
+                else:
+                    current = None  # ignore non-audio media
+            elif typ == "c" and current is not None:
+                current["connection"] = self._conn_addr(val)
+            elif typ == "a" and current is not None:
+                rm = re.match(r"rtpmap:(\d+)\s+([^/]+)/(\d+)", val)
+                if rm:
+                    current["rtpmap"][int(rm.group(1))] = {
+                        "name": rm.group(2), "rate": int(rm.group(3))
                     }
-                    media_streams.append(stream_info)
-            
-            siprec_data['media_streams'] = media_streams
-            
-        except Exception as e:
-            logger.warning(f"Error parsing SDP: {e}")
-    
-    def _extract_participants(self, call_info: pj.CallInfo, siprec_data: Dict[str, Any]):
-        """Extract participant information from call info."""
+
+        for s in streams:
+            s["codec"] = self._primary_codec(s)
+        return streams
+
+    def _conn_addr(self, val: str) -> Optional[str]:
+        # c=IN IP4 1.2.3.4
+        parts = val.split()
+        return parts[2] if len(parts) >= 3 else None
+
+    def _primary_codec(self, stream: Dict[str, Any]) -> str:
+        for pt in stream["payload_types"]:
+            if pt in stream["rtpmap"]:
+                return stream["rtpmap"][pt]["name"].upper()
+            if pt in _STATIC_PT:
+                return _STATIC_PT[pt]
+        return "PCMU"
+
+    def parse_rs_metadata(self, xml_text: str) -> List[Dict[str, Any]]:
+        """Parse RFC 7865 recording metadata into participant dicts."""
+        participants: List[Dict[str, Any]] = []
         try:
-            participants = []
-            
-            # Extract from remote URI
-            remote_uri = call_info.remoteUri
-            participant = self._parse_uri_for_participant(remote_uri, 'remote')
-            if participant:
-                participants.append(participant)
-            
-            # Extract from local URI
-            local_uri = call_info.localUri
-            participant = self._parse_uri_for_participant(local_uri, 'local')
-            if participant:
-                participants.append(participant)
-            
-            # If we don't have enough participants, create default ones
-            if len(participants) < 2:
-                # Create caller participant
-                caller = {
-                    'id': 'caller',
-                    'role': 'caller',
-                    'uri': remote_uri,
-                    'name': self._extract_name_from_uri(remote_uri),
-                    'tel': self._extract_phone_from_uri(remote_uri),
-                    'mailto': self._extract_email_from_uri(remote_uri)
-                }
-                participants.append(caller)
-                
-                # Create callee participant
-                callee = {
-                    'id': 'callee',
-                    'role': 'callee',
-                    'uri': local_uri,
-                    'name': self._extract_name_from_uri(local_uri),
-                    'tel': self._extract_phone_from_uri(local_uri),
-                    'mailto': self._extract_email_from_uri(local_uri)
-                }
-                participants.append(callee)
-            
-            siprec_data['participants'] = participants
-            
-        except Exception as e:
-            logger.warning(f"Error extracting participants: {e}")
-    
-    def _parse_uri_for_participant(self, uri: str, role: str) -> Optional[Dict[str, Any]]:
-        """Parse a SIP URI to extract participant information."""
-        try:
-            # Remove sip: prefix
-            if uri.startswith('sip:'):
-                uri = uri[4:]
-            
-            # Split on @ to separate user and domain
-            if '@' in uri:
-                user_part, domain_part = uri.split('@', 1)
-            else:
-                user_part = uri
-                domain_part = ''
-            
-            # Extract display name if present
-            name = ''
-            if '<' in user_part and '>' in user_part:
-                match = re.match(r'([^<]+)<([^>]+)>', user_part)
-                if match:
-                    name = match.group(1).strip().strip('"')
-                    user_part = match.group(2)
-            
-            # Extract phone number or email
-            tel = ''
-            mailto = ''
-            if re.match(r'^\+?[\d\-\(\)\s]+$', user_part):
-                tel = user_part
-            elif '@' in user_part:
-                mailto = user_part
-            
-            return {
-                'id': f"{role}_{user_part}",
-                'role': role,
-                'uri': f"sip:{uri}",
-                'name': name or user_part,
-                'tel': tel,
-                'mailto': mailto,
-                'domain': domain_part
-            }
-            
-        except Exception as e:
-            logger.warning(f"Error parsing URI {uri}: {e}")
-            return None
-    
-    def _extract_name_from_uri(self, uri: str) -> str:
-        """Extract display name from SIP URI."""
-        try:
-            if '<' in uri and '>' in uri:
-                match = re.match(r'([^<]+)<([^>]+)>', uri)
-                if match:
-                    return match.group(1).strip().strip('"')
-            return ''
-        except:
-            return ''
-    
-    def _extract_phone_from_uri(self, uri: str) -> str:
-        """Extract phone number from SIP URI."""
-        try:
-            # Remove sip: prefix and display name
-            clean_uri = uri
-            if clean_uri.startswith('sip:'):
-                clean_uri = clean_uri[4:]
-            
-            if '<' in clean_uri and '>' in clean_uri:
-                match = re.match(r'([^<]+)<([^>]+)>', clean_uri)
-                if match:
-                    clean_uri = match.group(2)
-            
-            # Extract user part before @
-            if '@' in clean_uri:
-                user_part = clean_uri.split('@')[0]
-            else:
-                user_part = clean_uri
-            
-            # Check if it looks like a phone number
-            if re.match(r'^\+?[\d\-\(\)\s]+$', user_part):
-                return user_part
-            
-            return ''
-        except:
-            return ''
-    
-    def _extract_email_from_uri(self, uri: str) -> str:
-        """Extract email from SIP URI."""
-        try:
-            # Remove sip: prefix and display name
-            clean_uri = uri
-            if clean_uri.startswith('sip:'):
-                clean_uri = clean_uri[4:]
-            
-            if '<' in clean_uri and '>' in clean_uri:
-                match = re.match(r'([^<]+)<([^>]+)>', clean_uri)
-                if match:
-                    clean_uri = match.group(2)
-            
-            # Extract user part before @
-            if '@' in clean_uri:
-                user_part = clean_uri.split('@')[0]
-                domain_part = clean_uri.split('@')[1]
-                
-                # Check if it looks like an email
-                if '@' in user_part or '.' in domain_part:
-                    return f"{user_part}@{domain_part}"
-            
-            return ''
-        except:
-            return ''
-    
-    def parse_bye(self, call_info: pj.CallInfo) -> Optional[Dict[str, Any]]:
-        """Parse BYE message for session termination."""
-        try:
-            return {
-                'session_id': call_info.callId,
-                'call_id': call_info.callId,
-                'timestamp': datetime.now(timezone.utc).isoformat(),
-                'reason': 'call_ended'
-            }
-        except Exception as e:
-            logger.error(f"Error parsing BYE: {e}")
-            return None
+            root = ET.fromstring(xml_text)
+        except ET.ParseError as e:
+            logger.warning("rs-metadata XML parse failed: %s", e)
+            return participants
+
+        for part in root.iter():
+            if _localname(part.tag) != "participant":
+                continue
+            pid = part.get("participant_id") or part.get("id") or str(len(participants))
+            name, aor = "", ""
+            for child in part.iter():
+                tag = _localname(child.tag)
+                if tag == "nameID" and not aor:
+                    aor = child.get("aor", "")
+                elif tag == "name" and not name and (child.text or "").strip():
+                    name = child.text.strip()
+            participants.append(self._participant_from_aor(pid, name, aor))
+        return participants
+
+    def _participant_from_aor(self, pid: str, name: str, aor: str) -> Dict[str, Any]:
+        tel, mailto = "", ""
+        user = aor
+        for scheme in ("sip:", "sips:", "tel:", "mailto:"):
+            if user.lower().startswith(scheme):
+                user = user[len(scheme):]
+                break
+        userpart = user.split("@", 1)[0].split(";", 1)[0]
+        if aor.lower().startswith("tel:") or re.fullmatch(r"\+?[\d\-().\s]+", userpart or ""):
+            tel = userpart
+        elif aor.lower().startswith("mailto:") or ("@" in user and "." in user.split("@", 1)[1]):
+            mailto = user.split(";", 1)[0]
+        return {
+            "id": pid,
+            "role": "participant",
+            "uri": aor,
+            "name": name or userpart,
+            "tel": tel,
+            "mailto": mailto,
+        }

@@ -1,5 +1,7 @@
-# SIP/RTP Stack
-pjsua2==2.13.1
+# SIP/RTP: the SRS is a pure-Python asyncio SIP UAS (siprec_srs/sip_server.py)
+# + RTP recorder (siprec_srs/rtp_recorder.py). No pjsua2 / pjproject needed.
+# G.711 decode uses stdlib `audioop`, which moved out of stdlib in 3.13:
+audioop-lts; python_version >= "3.13"
 
 # vCon library (>=0.9.1 for spec-correct names: amended, critical)
 vcon>=0.9.1
