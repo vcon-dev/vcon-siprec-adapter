@@ -264,7 +264,9 @@ class SIPRECServer:
             stream_id = f"{session.session_id}_stream_{stream['index']}"
             wav_path = tempfile.mktemp(prefix=f"{stream_id}_", suffix=".wav")
             rec = RTPRecorder(stream_id, wav_path,
-                              sample_rate=self.config.rtp.sample_rate)
+                              sample_rate=self.config.rtp.sample_rate,
+                              port_range=(self.config.rtp.port_range_start,
+                                          self.config.rtp.port_range_end))
             await rec.start()
             session.recorders[stream_id] = rec
             stream["local_rtp_port"] = rec.local_port
@@ -316,12 +318,27 @@ class SIPRECServer:
         lines.append(f"Call-ID: {req.get('Call-ID')}")
         lines.append(f"CSeq: {req.get('CSeq')}")
         if add_contact_ip:
-            lines.append(f"Contact: <sip:recorder@{add_contact_ip}>")
+            lines.append(f"Contact: {self._contact(req, add_contact_ip)}")
         if content_type:
             lines.append(f"Content-Type: {content_type}")
         lines.append(f"Content-Length: {len(body)}")
         lines.append("")
         return ("\r\n".join(lines) + "\r\n").encode() + body
+
+    def _contact(self, req: SIPMessage, ip: str) -> str:
+        """Contact URI reflecting the transport the request arrived on and
+        our matching listening port, so in-dialog BYE/re-INVITE route back
+        here rather than defaulting to 5060/UDP."""
+        via = req.get("Via")
+        transport = "udp"
+        if via.startswith("SIP/2.0/"):
+            transport = via[8:].split(" ", 1)[0].strip().lower()
+        srv = self.config.server
+        port = {"tls": srv.sip_port_tls, "tcp": srv.sip_port_tcp}.get(
+            transport, srv.sip_port_udp)
+        if transport in ("tls", "tcp"):
+            return f"<sip:recorder@{ip}:{port};transport={transport}>"
+        return f"<sip:recorder@{ip}:{port}>"
 
     def _build_sdp_answer(self, ip: str,
                           media: List[Tuple[Dict, int]]) -> str:

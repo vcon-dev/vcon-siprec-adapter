@@ -120,6 +120,10 @@ async def test_siprec_invite_rtp_bye_produces_vcon(tmp_path):
             break
     assert rtp_ports, "no 200 OK with SDP answer received"
     assert len(rtp_ports) == 2, f"expected 2 answered streams, got {rtp_ports}"
+    # Advertised media ports must fall in the configured firewall range,
+    # else RTP is dropped upstream (the David interop bug, 2026-07-20).
+    assert all(cfg.rtp.port_range_start <= p <= cfg.rtp.port_range_end
+               for p in rtp_ports), f"RTP ports outside firewall range: {rtp_ports}"
 
     # 2) Stream PCMU RTP to each answered port.
     rtp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -166,3 +170,21 @@ async def test_siprec_invite_rtp_bye_produces_vcon(tmp_path):
     recordings = [dlg for dlg in d["dialog"] if dlg.get("type") == "recording"]
     assert len(recordings) == 2
     assert all(dlg.get("body") for dlg in recordings)  # inline base64url audio
+
+
+def test_contact_reflects_transport_and_port():
+    """In-dialog BYE/re-INVITE must route back to us, not default 5060/UDP."""
+    from siprec_srs.sip_server import SIPMessage
+
+    cfg = Config(server=ServerConfig(sip_port_tls=5061, sip_port_tcp=5062,
+                                     sip_port_udp=5060))
+    srv = SIPRECServer(cfg)
+
+    def contact(via_transport, port_hdr):
+        msg = SIPMessage(f"INVITE sip:recorder@host SIP/2.0",
+                         [("Via", f"SIP/2.0/{via_transport} 1.2.3.4:{port_hdr}")], b"")
+        return srv._contact(msg, "9.9.9.9")
+
+    assert contact("TLS", 5061) == "<sip:recorder@9.9.9.9:5061;transport=tls>"
+    assert contact("TCP", 5062) == "<sip:recorder@9.9.9.9:5062;transport=tcp>"
+    assert contact("UDP", 5060) == "<sip:recorder@9.9.9.9:5060>"

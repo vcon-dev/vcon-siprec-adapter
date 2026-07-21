@@ -11,10 +11,11 @@ are counted and skipped. No SRTP (bring-up is plain RTP).
 """
 
 import asyncio
+import errno
 import logging
 import struct
 import wave
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 try:  # audioop is stdlib on <=3.12, a pip shim (audioop-lts) on >=3.13
     import audioop
@@ -50,12 +51,16 @@ class RTPRecorder:
 
     def __init__(self, stream_id: str, wav_path: str,
                  bind_host: str = "0.0.0.0", local_port: int = 0,
-                 sample_rate: int = 8000):
+                 sample_rate: int = 8000,
+                 port_range: Optional[Tuple[int, int]] = None):
         self.stream_id = stream_id
         self.wav_path = wav_path
         self.bind_host = bind_host
         self.local_port = local_port
         self.sample_rate = sample_rate
+        # When set and no explicit local_port is given, bind within this
+        # inclusive range so advertised media ports match the firewall.
+        self.port_range = port_range
         self.codec = "PCMU"
         self.packet_count = 0
         self.bytes_received = 0
@@ -70,10 +75,13 @@ class RTPRecorder:
                 "audioop unavailable; install 'audioop-lts' on Python 3.13+"
             )
         loop = asyncio.get_running_loop()
-        self._transport, _ = await loop.create_datagram_endpoint(
-            lambda: _RTPProtocol(self),
-            local_addr=(self.bind_host, self.local_port),
-        )
+        if self.port_range and not self.local_port:
+            self._transport = await self._bind_in_range(loop)
+        else:
+            self._transport, _ = await loop.create_datagram_endpoint(
+                lambda: _RTPProtocol(self),
+                local_addr=(self.bind_host, self.local_port),
+            )
         sock = self._transport.get_extra_info("socket")
         self.local_port = sock.getsockname()[1]
 
@@ -83,6 +91,27 @@ class RTPRecorder:
         self._wave.setframerate(self.sample_rate)
         logger.info("RTP recorder %s listening on udp/%d -> %s",
                     self.stream_id, self.local_port, self.wav_path)
+
+    async def _bind_in_range(self, loop):
+        """Bind the first free UDP port in self.port_range. Callers await
+        start() sequentially, so an already-bound port simply fails here and
+        we move to the next. RTP is even-port by convention (RFC 3550)."""
+        lo, hi = self.port_range
+        start = lo if lo % 2 == 0 else lo + 1
+        for port in range(start, hi + 1, 2):
+            try:
+                transport, _ = await loop.create_datagram_endpoint(
+                    lambda: _RTPProtocol(self),
+                    local_addr=(self.bind_host, port),
+                )
+                return transport
+            except OSError as e:
+                if e.errno in (errno.EADDRINUSE, errno.EACCES):
+                    continue
+                raise
+        raise RuntimeError(
+            f"no free RTP port in range {lo}-{hi} for {self.stream_id}"
+        )
 
     def handle_packet(self, data: bytes):
         """Depacketize one RTP packet and append decoded PCM to the WAV."""
