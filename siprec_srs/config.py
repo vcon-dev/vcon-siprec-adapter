@@ -68,6 +68,11 @@ class RTPConfig:
     audio_format: str = "wav"
     sample_rate: int = 8000
     channels: int = 1
+    # RTP recorders bind within this inclusive UDP port range so the media
+    # ports we advertise match the firewall/NAT the SRS sits behind. Must
+    # cover at least max_sessions * streams-per-call ports.
+    port_range_start: int = 10000
+    port_range_end: int = 20000
 
 
 @dataclass
@@ -297,7 +302,9 @@ class ConfigManager:
                 supported_codecs=rtp_data.get('supported_codecs', config.rtp.supported_codecs),
                 audio_format=rtp_data.get('audio_format', config.rtp.audio_format),
                 sample_rate=rtp_data.get('sample_rate', config.rtp.sample_rate),
-                channels=rtp_data.get('channels', config.rtp.channels)
+                channels=rtp_data.get('channels', config.rtp.channels),
+                port_range_start=rtp_data.get('port_range_start', config.rtp.port_range_start),
+                port_range_end=rtp_data.get('port_range_end', config.rtp.port_range_end)
             )
         
         # Parse media configuration

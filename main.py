@@ -127,7 +127,7 @@ class SIPRECSRSApp:
             
             # Start SIP server
             self.sip_server = SIPRECServer(self.config)
-            self.sip_server.set_session_callback(self._on_session_created)
+            self.sip_server.set_session_complete_callback(self._on_session_complete)
             await self.sip_server.start()
             
             self.running = True
@@ -164,29 +164,28 @@ class SIPRECSRSApp:
         except Exception as e:
             logging.error(f"Error stopping server: {e}")
     
-    async def _on_session_created(self, session):
-        """Handle new SIPREC session creation."""
+    async def _on_session_complete(self, session):
+        """Convert a finished SIPREC session (post-BYE) to a vCon and emit it."""
         try:
-            logging.info(f"New SIPREC session created: {session.session_id}")
-            
-            # Wait for session to complete (in a real implementation, 
-            # this would be triggered by session end events)
-            await asyncio.sleep(5)  # Simulate session duration
-            
-            # Convert session to vCon
+            logging.info(f"Processing completed SIPREC session: {session.session_id}")
+
+            # Convert session to vCon. The session object exposes
+            # get_audio_files(), so it doubles as the converter's rtp handler.
             session_data = {
                 'session_id': session.session_id,
                 'call_id': session.call_id,
                 'recording_session_id': session.recording_session_id,
                 'participants': session.participants,
-                'start_time': session.start_time.isoformat(),
-                'end_time': session.end_time.isoformat() if session.end_time else None,
-                'media_streams': session.media_streams
+                'start_time': session.start_time,
+                'end_time': session.end_time,
+                'media_streams': session.media_streams,
+                'remote_uri': session.remote_uri,
+                'local_uri': session.local_uri,
             }
             
-            # Convert to vCon
+            # Convert to vCon (session exposes get_audio_files()).
             vcon = self.vcon_converter.convert_session_to_vcon(
-                session_data, session.rtp_handler
+                session_data, session
             )
             
             if not vcon:
@@ -222,8 +221,8 @@ class SIPRECSRSApp:
                 logging.info(f"Webhook delivery result: {delivery_result}")
             
             # Clean up temporary files
-            if self.config.storage.cleanup_temp_files and session.rtp_handler:
-                await self._cleanup_temp_files(session.rtp_handler)
+            if self.config.storage.cleanup_temp_files:
+                await self._cleanup_temp_files(session)
             
         except Exception as e:
             logging.error(f"Error processing session {session.session_id}: {e}")
