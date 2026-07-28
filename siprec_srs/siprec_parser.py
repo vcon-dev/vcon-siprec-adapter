@@ -63,6 +63,21 @@ def _localname(tag: str) -> str:
     return tag.split("}", 1)[1] if "}" in tag else tag
 
 
+def _is_phone_number(s: str) -> bool:
+    """True for something dialable outside the PBX, not an extension.
+
+    `+15085551234` and `8587645225` qualify; `1003` does not. Seven digits
+    is the shortest real subscriber number (NANP local), so anything under
+    that is treated as an internal extension.
+    """
+    if not s:
+        return False
+    digits = re.sub(r"[^\d]", "", s)
+    if not re.fullmatch(r"\+?[\d\-().\s]+", s):
+        return False
+    return s.startswith("+") or len(digits) >= 7
+
+
 class SIPRECParser:
     """Parse SDP and rs-metadata out of a SIPREC INVITE."""
 
@@ -142,18 +157,93 @@ class SIPRECParser:
             participants.append(self._participant_from_aor(pid, name, aor))
         return participants
 
+    def parse_vendor_extension(self, xml_text: str) -> Dict[str, Any]:
+        """Capture a vendor extension block from rs-metadata, verbatim.
+
+        RFC 7865 lets an SRC hang its own namespaced element off `recording`.
+        NetSapiens uses `netsapiensExtension` (schema.netsapiens.com), which
+        carries what RFC 7865 has nowhere to put: the real calling/called
+        numbers, the tenant, and why the call was recorded (`byAction`,
+        `byUserID` for a forward).
+
+        Deliberately schema-agnostic: every child element and attribute is
+        captured by local name, whatever the declared `version`. NetSapiens
+        moved 1.0 -> 1.1 on 2026-07-25 adding fields for complex call
+        scenarios, and we have not seen a 1.1 payload. Enumerating known
+        fields here would silently drop whatever 1.1 added, so nothing is
+        enumerated. Repeated elements (e.g. `user`) collect into a list.
+        """
+        try:
+            root = ET.fromstring(xml_text)
+        except ET.ParseError as e:
+            logger.warning("rs-metadata XML parse failed: %s", e)
+            return {}
+
+        for child in root:
+            tag = _localname(child.tag)
+            if not tag.lower().endswith("extension"):
+                continue
+            ext = self._element_to_dict(child)
+            ext["_element"] = tag
+            ns = child.tag.split("}", 1)[0].lstrip("{") if "}" in child.tag else ""
+            if ns:
+                ext["_namespace"] = ns
+            return ext
+        return {}
+
+    def _element_to_dict(self, el) -> Dict[str, Any]:
+        """Recursively flatten an element into attrs, text and children."""
+        out: Dict[str, Any] = {}
+        for k, v in el.attrib.items():
+            out[_localname(k)] = v
+        for child in el:
+            tag = _localname(child.tag)
+            grand = self._element_to_dict(child)
+            text = (child.text or "").strip()
+            value: Any = grand if grand else text
+            if grand and text:
+                value = dict(grand, _text=text)
+            if tag in out:
+                if not isinstance(out[tag], list):
+                    out[tag] = [out[tag]]
+                out[tag].append(value)
+            else:
+                out[tag] = value
+        return out
+
     def _participant_from_aor(self, pid: str, name: str, aor: str) -> Dict[str, Any]:
-        tel, mailto = "", ""
+        """Map an AOR to spec-typed party fields, keyed on the URI scheme.
+
+        The scheme is authoritative. A `sip:` AOR is never an email address,
+        however much its user@host shape resembles one, and a PBX extension
+        in a `sip:` AOR is not a dialable telephone number. Getting this
+        wrong puts fabricated `tel`/`mailto` values into the vCon, so when
+        the scheme does not prove a type, both are left empty and the full
+        AOR is preserved in `uri`.
+        """
+        scheme = ""
         user = aor
-        for scheme in ("sip:", "sips:", "tel:", "mailto:"):
-            if user.lower().startswith(scheme):
-                user = user[len(scheme):]
+        for s in ("sips:", "sip:", "tel:", "mailto:"):
+            if user.lower().startswith(s):
+                scheme, user = s.rstrip(":"), user[len(s):]
                 break
         userpart = user.split("@", 1)[0].split(";", 1)[0]
-        if aor.lower().startswith("tel:") or re.fullmatch(r"\+?[\d\-().\s]+", userpart or ""):
+
+        tel, mailto = "", ""
+        if scheme == "tel":
             tel = userpart
-        elif aor.lower().startswith("mailto:") or ("@" in user and "." in user.split("@", 1)[1]):
+        elif scheme == "mailto":
             mailto = user.split(";", 1)[0]
+        elif scheme in ("sip", "sips"):
+            # Only a genuine phone number, not an internal extension. Bare
+            # extensions (NetSapiens sends sip:1003@domain) have no meaning
+            # outside the PBX; the real E.164 numbers arrive in the vendor
+            # extension instead.
+            if _is_phone_number(userpart):
+                tel = userpart
+        elif not scheme and _is_phone_number(userpart):
+            tel = userpart
+
         return {
             "id": pid,
             "role": "participant",

@@ -176,6 +176,7 @@ class SIPRECSRSApp:
                 'call_id': session.call_id,
                 'recording_session_id': session.recording_session_id,
                 'participants': session.participants,
+                'vendor_extension': getattr(session, 'vendor_extension', {}),
                 'start_time': session.start_time,
                 'end_time': session.end_time,
                 'media_streams': session.media_streams,

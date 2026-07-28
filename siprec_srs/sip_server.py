@@ -90,6 +90,7 @@ class SIPRECSession:
         self.call_id = call_id
         self.recording_session_id = ""
         self.participants: List[Dict] = []
+        self.vendor_extension: Dict = {}
         self.media_streams: List[Dict] = []
         self.remote_uri = ""
         self.local_uri = ""
@@ -254,8 +255,9 @@ class SIPRECServer:
         session.recording_session_id = call_id  # SRC dialog id; refine if metadata carries one
 
         if rs_meta:
-            session.participants = self.parser.parse_rs_metadata(
-                rs_meta.decode("utf-8", "replace"))
+            rs_text = rs_meta.decode("utf-8", "replace")
+            session.participants = self.parser.parse_rs_metadata(rs_text)
+            session.vendor_extension = self.parser.parse_vendor_extension(rs_text)
 
         # Bind an RTP recorder per audio stream and remember the port we
         # advertise for it.

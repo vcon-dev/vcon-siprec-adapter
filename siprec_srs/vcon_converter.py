@@ -230,6 +230,13 @@ class VConConverter:
                 'source': 'siprec',
             }
 
+            # Vendor extension block from rs-metadata, verbatim. This is where
+            # NetSapiens puts the real calling/called numbers and the reason
+            # for the recording, none of which RFC 7865 has a field for.
+            vendor = session_data.get('vendor_extension') or {}
+            if vendor:
+                session_info['vendor_extension'] = vendor
+
             # The vcon lib's add_attachment() rejects encoding="json"; build
             # the attachment dict directly per the speckit guidance.
             vcon.vcon_dict.setdefault("attachments", []).append({
