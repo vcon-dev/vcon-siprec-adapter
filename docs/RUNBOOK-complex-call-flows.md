@@ -21,7 +21,44 @@ David on what changes in 1.1, 2026-07-29 17:15 UTC:
 
 ---
 
-## 1. The blocker: we did not answer a re-INVITE with SDP — FIXED 2026-07-29
+## 0. READ FIRST: the mechanism is not re-INVITE
+
+Answered by David Wang at 2026-07-29 20:07 UTC, after section 1 below was
+written on the opposite assumption:
+
+> Our side closes the existing SIPREC session start a new SIPREC session upon
+> changes in the parties. However, these sequence of SIPREC session share the
+> same group_id but with an incrementing "groupSeq" inside the NetSapiens meta
+> data session.
+
+**NetSapiens never re-offers on the existing dialog for a party change.** Every
+party change is a BYE plus a fresh INVITE. So an attended transfer arrives as
+three separate SIPREC sessions, and today produces three separate vCons.
+
+Section 1 is therefore about a shape this counterparty does not send. The fix
+there is still correct and still deployed, and it protects against any SRC that
+*does* re-offer, but it is not what tomorrow exercises. The relevant work is
+cross-session correlation, section 2 gap 3 and CON-708.
+
+Real payload, from David's 20:36 UTC mail, saved verbatim at
+`tests/fixtures/netsapiens_attended_transfer_11.py`:
+
+| Leg | group_id | groupSeq | byAction | parties |
+|-----|----------|----------|----------|---------|
+| Initial 20:17:21Z | `58cc3154ca0bdd2b0efbf9a04139526e` | 0 | ForwardSRing | 1001, 1002 |
+| Consultation 20:17:41Z | `5ed05251-7abca882-e05368bf@192.168.0.245` | 0 | ForwardSRing | 1002, 1006 |
+| Post-transfer 20:17:48Z | `58cc3154…` (the original) | **1** | **XferSup** | 1001, 1006 |
+
+**Agreed flows: blind transfer, then attended transfer.** No conference or barge
+until their v46, since their implementation is two-party only. Simultaneous ring
+changes only `byAction`, because they start SIPREC on answer.
+
+`group_id`, `groupSeq`, their `stream_id`s, and the transfer references are all
+retained and tagged as of `c64e2e8`, deployed 20:54 UTC (CON-708 step 1). The
+three legs are now stitchable; whether they *should* be stitched into one vCon
+is still undecided, deliberately, until blind transfer's shape is also in hand.
+
+## 1. A re-INVITE was answered without SDP — FIXED 2026-07-29, but off-path
 
 > **Status: fixed, committed, deployed.** `a632372` on
 > `thomashowe/con-707-reinvite-reoffer-sdp-answer`, live on 138.197.42.97 as of
