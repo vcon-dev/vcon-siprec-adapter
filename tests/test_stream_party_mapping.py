@@ -131,7 +131,55 @@ def test_participant_order_reversed_relative_to_streams():
         "attribute it to Boba (party 0)")
 
 
+def test_three_streams_labels_out_of_order():
+    """Transfer adds a third stream, and stream order stops tracking parties.
+
+    Streams are declared 2, 3, 1 and participants listed Din, Boba, Carol, so
+    no positional reading of either list produces the right answer.
+    """
+    CAROL = "20260729164500058200-0018491486ec5db64acd5aca455acff0"
+    S_C = "wKpZqR2nT8vXbYcD009293"
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<recording xmlns="urn:ietf:params:xml:ns:recording:1">'
+        f'<participant participant_id="{DIN}"><nameID '
+        f'aor="sip:1001@dwang.netsapiens.com"><name>Din Djarin</name>'
+        f'</nameID></participant>'
+        f'<participant participant_id="{BOBA}"><nameID '
+        f'aor="sip:1002@dwang.netsapiens.com"><name>Boba Fett</name>'
+        f'</nameID></participant>'
+        f'<participant participant_id="{CAROL}"><nameID '
+        f'aor="sip:1003@dwang.netsapiens.com"><name>Carol</name>'
+        f'</nameID></participant>'
+        f'<stream stream_id="{STREAM_B}" session_id="s"><label>2</label></stream>'
+        f'<stream stream_id="{S_C}" session_id="s"><label>3</label></stream>'
+        f'<stream stream_id="{STREAM_A}" session_id="s"><label>1</label></stream>'
+        f'<participantstreamassoc participant_id="{BOBA}">'
+        f'<send>{STREAM_B}</send></participantstreamassoc>'
+        f'<participantstreamassoc participant_id="{CAROL}">'
+        f'<send>{S_C}</send></participantstreamassoc>'
+        f'<participantstreamassoc participant_id="{DIN}">'
+        f'<send>{STREAM_A}</send></participantstreamassoc>'
+        '</recording>'
+    )
+    assert SIPRECParser().parse_stream_labels(xml) == {
+        "1": DIN, "2": BOBA, "3": CAROL}
+
+
+def test_participant_id_shape_is_not_interpreted():
+    """1.0 used a system user id, 1.1 uses the leg's SIP Call-ID.
+
+    The join reads whatever the metadata says, so both shapes work. Pinned so
+    the version-agnosticism is asserted rather than assumed.
+    """
+    v10 = _metadata().replace(DIN, "1001@dwang.netsapiens.com")
+    labels = SIPRECParser().parse_stream_labels(v10)
+    assert labels == {"1": "1001@dwang.netsapiens.com", "2": BOBA}
+
+
 if __name__ == "__main__":
+    test_three_streams_labels_out_of_order()
+    test_participant_id_shape_is_not_interpreted()
     test_parse_stream_labels_real_metadata()
     test_no_associations_returns_empty()
     test_contradictory_associations_refuse_to_guess()

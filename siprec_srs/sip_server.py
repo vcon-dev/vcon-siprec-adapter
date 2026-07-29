@@ -220,6 +220,13 @@ class SIPRECServer:
                 await self._on_bye(msg, reply)
             elif method == "ACK":
                 pass  # dialog confirmed; media flows
+            elif method == "UPDATE" and msg.get("Call-ID") in self.sessions:
+                # UPDATE can carry a re-offer just as a re-INVITE does, and it
+                # needs the same SDP answer.
+                await self._on_reoffer(
+                    msg, advertise_ip, reply,
+                    self.sessions[msg.get("Call-ID")],
+                    (msg.get("Call-ID"), msg.get("CSeq")))
             elif method in ("OPTIONS", "INFO", "UPDATE"):
                 reply(self._response(msg, 200, "OK"))
             else:
@@ -238,46 +245,25 @@ class SIPRECServer:
         if key in self._responses:
             reply(self._responses[key])
             return
-        # Re-INVITE on an existing dialog: just 200 the existing SDP setup.
+        # Re-INVITE on an existing dialog: a re-offer, not a no-op.
         if call_id in self.sessions:
-            reply(self._response(msg, 200, "OK"))
+            await self._on_reoffer(msg, advertise_ip, reply,
+                                   self.sessions[call_id], key)
             return
 
         reply(self._response(msg, 100, "Trying"))
 
-        parts = split_multipart(msg.body, msg.get("Content-Type"))
-        sdp = (parts.get("sdp") or b"").decode("utf-8", "replace")
-        rs_meta = parts.get("rs-metadata+xml") or parts.get("rs-metadata") or b""
-
+        sdp, rs_text = self._split_body(msg)
         streams = self.parser.parse_sdp(sdp) if sdp else []
         session = SIPRECSession(call_id)
         session.remote_uri = _uri(msg.get("From"))
         session.local_uri = _uri(msg.get("To"))
         session.recording_session_id = call_id  # SRC dialog id; refine if metadata carries one
 
-        if rs_meta:
-            rs_text = rs_meta.decode("utf-8", "replace")
-            session.participants = self.parser.parse_rs_metadata(rs_text)
-            session.vendor_extension = self.parser.parse_vendor_extension(rs_text)
-            session.stream_labels = self.parser.parse_stream_labels(rs_text)
+        if rs_text:
+            self._refresh_metadata(session, rs_text)
 
-        # Bind an RTP recorder per audio stream and remember the port we
-        # advertise for it.
-        answer_media: List[Tuple[Dict, int]] = []
-        for stream in streams:
-            stream_id = f"{session.session_id}_stream_{stream['index']}"
-            wav_path = tempfile.mktemp(prefix=f"{stream_id}_", suffix=".wav")
-            rec = RTPRecorder(stream_id, wav_path,
-                              sample_rate=self.config.rtp.sample_rate,
-                              port_range=(self.config.rtp.port_range_start,
-                                          self.config.rtp.port_range_end))
-            await rec.start()
-            session.recorders[stream_id] = rec
-            stream["local_rtp_port"] = rec.local_port
-            stream["stream_id"] = stream_id
-            session.media_streams.append(stream)
-            answer_media.append((stream, rec.local_port))
-
+        answer_media = [await self._bind_stream(session, s) for s in streams]
         self.sessions[call_id] = session
 
         sdp_answer = self._build_sdp_answer(advertise_ip, answer_media)
@@ -288,6 +274,116 @@ class SIPRECServer:
         reply(resp)
         logger.info("Answered SIPREC INVITE call_id=%s: %d stream(s), %d participant(s)",
                     call_id, len(streams), len(session.participants))
+
+    async def _on_reoffer(self, msg: SIPMessage, advertise_ip: str,
+                          reply: Callable[[bytes], None],
+                          session: "SIPRECSession",
+                          key: Tuple[str, str]):
+        """Answer a re-INVITE/UPDATE re-offer with a full SDP answer.
+
+        A transfer is normally signalled this way: the SRC re-offers on the
+        existing recording dialog with updated SDP and updated rs-metadata.
+        Answering with a bare `200 OK` (no SDP) leaves the SRC no media
+        address and no `a=label` to correlate against, which is the CON-704
+        failure with less to work from, so it never sources RTP for the new
+        leg.
+
+        Existing streams keep the port they were already advertised on, so
+        media in flight is not disturbed. A label we have not seen gets a
+        new recorder.
+        """
+        sdp, rs_text = self._split_body(msg)
+        if not sdp:
+            # No offer to answer (e.g. a keepalive re-INVITE). Metadata-only
+            # updates are still worth absorbing.
+            if rs_text:
+                self._refresh_metadata(session, rs_text)
+            reply(self._response(msg, 200, "OK", add_contact_ip=advertise_ip))
+            return
+
+        if rs_text:
+            self._refresh_metadata(session, rs_text)
+
+        by_label = {s["label"]: s for s in session.media_streams if s.get("label")}
+        answer_media: List[Tuple[Dict, int]] = []
+        added = 0
+        for stream in self.parser.parse_sdp(sdp):
+            known = by_label.get(stream.get("label"))
+            if known is None and not stream.get("label"):
+                # Unlabelled: fall back to position among existing streams.
+                known = next(
+                    (s for s in session.media_streams
+                     if s["index"] == stream["index"] and not s.get("label")),
+                    None)
+            if known is not None:
+                answer_media.append((known, known["local_rtp_port"]))
+            else:
+                answer_media.append(await self._bind_stream(session, stream))
+                added += 1
+
+        sdp_answer = self._build_sdp_answer(advertise_ip, answer_media)
+        resp = self._response(msg, 200, "OK", body=sdp_answer.encode(),
+                              content_type="application/sdp",
+                              add_contact_ip=advertise_ip)
+        self._responses[key] = resp
+        reply(resp)
+        logger.info(
+            "Answered %s re-offer call_id=%s: %d stream(s) in answer, %d new, "
+            "%d participant(s)",
+            msg.method, session.call_id, len(answer_media), added,
+            len(session.participants))
+
+    def _split_body(self, msg: SIPMessage) -> Tuple[str, str]:
+        """(sdp_text, rs_metadata_text) from a SIPREC request body."""
+        parts = split_multipart(msg.body, msg.get("Content-Type"))
+        sdp = (parts.get("sdp") or b"").decode("utf-8", "replace")
+        rs_meta = parts.get("rs-metadata+xml") or parts.get("rs-metadata") or b""
+        return sdp, rs_meta.decode("utf-8", "replace") if rs_meta else ""
+
+    def _refresh_metadata(self, session: "SIPRECSession", rs_text: str):
+        """Absorb rs-metadata, preserving party indices already assigned.
+
+        Participants are appended, never reordered or dropped: a party index
+        is referenced by the dialogs built at conversion time, so renumbering
+        mid-session would silently re-attribute audio. A participant that
+        leaves is therefore still listed; representing disassociation is
+        separate work.
+        """
+        participants = self.parser.parse_rs_metadata(rs_text)
+        seen = {p.get("id") for p in session.participants}
+        for p in participants:
+            if p.get("id") not in seen:
+                session.participants.append(p)
+                seen.add(p.get("id"))
+
+        session.stream_labels.update(self.parser.parse_stream_labels(rs_text))
+
+        # Latest non-empty wins: on a transfer the newer extension is the one
+        # carrying the xfer-from reference.
+        ext = self.parser.parse_vendor_extension(rs_text)
+        if ext:
+            session.vendor_extension = ext
+
+    async def _bind_stream(self, session: "SIPRECSession",
+                           stream: Dict) -> Tuple[Dict, int]:
+        """Bind an RTP recorder for one offered stream, return (stream, port).
+
+        `stream_id` is numbered by position in `media_streams` rather than by
+        the offer's m-line index, so streams added by a later re-offer cannot
+        collide with the ones bound at INVITE time.
+        """
+        stream_id = f"{session.session_id}_stream_{len(session.media_streams)}"
+        wav_path = tempfile.mktemp(prefix=f"{stream_id}_", suffix=".wav")
+        rec = RTPRecorder(stream_id, wav_path,
+                          sample_rate=self.config.rtp.sample_rate,
+                          port_range=(self.config.rtp.port_range_start,
+                                      self.config.rtp.port_range_end))
+        await rec.start()
+        session.recorders[stream_id] = rec
+        stream["local_rtp_port"] = rec.local_port
+        stream["stream_id"] = stream_id
+        session.media_streams.append(stream)
+        return stream, rec.local_port
 
     async def _on_bye(self, msg: SIPMessage, reply: Callable[[bytes], None]):
         call_id = msg.get("Call-ID")
