@@ -21,10 +21,24 @@ David on what changes in 1.1, 2026-07-29 17:15 UTC:
 
 ---
 
-## 1. The blocker: we do not answer a re-INVITE with SDP
+## 1. The blocker: we did not answer a re-INVITE with SDP — FIXED 2026-07-29
 
-**Read this before anything else. This is a hard blocker for attended transfer
-and it is the same failure class as CON-704.**
+> **Status: fixed, committed, deployed.** `a632372` on
+> `thomashowe/con-707-reinvite-reoffer-sdp-answer`, live on 138.197.42.97 as of
+> 19:43 UTC, health ok and `/root/probe_labels.py` passing. Tracked as CON-707
+> (Done). The section below is kept as the diagnosis, since it explains what to
+> watch for tomorrow and why the re-offer path is the risky one.
+>
+> What now happens: a re-INVITE or UPDATE gets a full SDP answer with labels and
+> Contact; existing streams keep their advertised ports matched by `a=label`; an
+> unseen label gets a new recorder; updated rs-metadata is absorbed with
+> participants appended (never reordered, because party indices are referenced
+> by dialogs built at conversion time). Covered by
+> `tests/test_complex_call_flows.py`, 5 tests, all verified to fail against the
+> old behavior.
+
+**Original diagnosis, 2026-07-29. This was a hard blocker for attended transfer
+and the same failure class as CON-704.**
 
 `sip_server._on_invite`, lines 241-244:
 
@@ -78,14 +92,18 @@ the same way the missing label burned the week.
 
 ## 2. Known gaps, ranked, with what each costs tomorrow
 
-| # | Gap | Where | Cost in the session |
-|---|-----|-------|---------------------|
-| 1 | Re-INVITE answered with no SDP | `sip_server.py:241` | Transfer media never flows. Blocker. |
-| 2 | Updated rs-metadata on re-INVITE dropped | same early return | Transferee missing from the vCon. Wrong output, not a failure. |
-| 3 | `group_id` / `group-ref` never parsed | `siprec_parser.parse_rs_metadata` only iterates `participant` | Two SIPREC dialogs from one transfer produce two unlinked vCons. |
-| 4 | `recording_session_id = call_id` | `sip_server.py:255`, comment already says "refine if metadata carries one" | We ignore the metadata's own `session_id`, so correlation keys differ from theirs. |
-| 5 | `UPDATE` gets bare 200 OK | `sip_server.py:223` | Same as #1 if they use UPDATE instead of re-INVITE. |
-| 6 | Participant disassociation not represented | `participantsessionassoc` / `disassociate-time` unparsed | A party who leaves mid-call looks present for the whole recording. |
+| # | Gap | Status | Cost in the session |
+|---|-----|--------|---------------------|
+| 1 | Re-INVITE answered with no SDP | **FIXED**, CON-707 | Was: transfer media never flows. |
+| 2 | Updated rs-metadata on re-INVITE dropped | **FIXED**, CON-707 | Was: transferee missing from the vCon. |
+| 5 | `UPDATE` gets bare 200 OK | **FIXED**, CON-707 | Was: same as #1 via UPDATE. |
+| 3 | `group_id` / `group-ref` never parsed | OPEN, CON-708 | Two dialogs from one transfer produce two unlinked vCons. |
+| 4 | `recording_session_id = call_id`, metadata `session_id` ignored | OPEN, CON-708 | Our correlation key differs from theirs. |
+| 6 | Participant disassociation not represented | OPEN, CON-709 | A party who leaves mid-call looks present for the whole recording. |
+
+Gaps 1, 2, and 5 shared one fix and are done. What is left is one decision
+(CON-708) and one modelling question (CON-709), neither of which should be
+improvised during the call.
 
 Gaps 3 and 4 are worth a decision, not a rush fix: if a transfer opens a second
 recording dialog, the choice is one vCon per dialog cross-referenced by group, or
@@ -94,8 +112,7 @@ which shape their transfer actually produces and decide after.
 
 ## 3. Pre-call work, in order
 
-Now is 2026-07-29 19:35 UTC. About 21 hours, realistically one evening plus one
-morning.
+Written 2026-07-29 19:35 UTC, updated 19:50 UTC after items 2, 3, and 4 landed.
 
 1. **Ask David for the flow list and a metadata sample per flow.** Highest value
    per minute, and it is a question only he can answer. Specifically: which
@@ -103,16 +120,16 @@ morning.
    simultaneous ring, conference/barge, hold/resume), whether each is signalled
    as re-INVITE, UPDATE, or a brand-new INVITE, and a raw rs-metadata sample for
    the transfer case the way he sent the 1.1 sample today. A sample lets us build
-   a fixture and pre-validate offline instead of discovering shapes live. Send
-   via Superhuman as thomas.howe@strolid.com.
-2. **Fix gap #1** (section 1). Blocker, and small.
-3. **Build local synthetic tests for the flows** (section 4) so we know our own
-   behavior before their traffic arrives. Extend
-   `tests/test_siprec_capture.py`, which already drives INVITE -> RTP -> BYE on
-   loopback and is the right harness.
-4. **Re-run the on-the-wire probe** after any deploy: `/root/probe_labels.py` on
-   the droplet exits non-zero unless the answer carries both labels. Add a
-   re-INVITE leg to it if time allows, since that is now the risky path.
+   a fixture and pre-validate offline instead of discovering shapes live.
+   **Status: drafted in Superhuman as thomas.howe@strolid.com, draft
+   `draft002a40f5c89f7244`, not sent. Thomas sends it.**
+2. ~~**Fix gap #1**~~ **DONE**, CON-707, deployed 19:43 UTC (section 1).
+3. ~~**Build local synthetic tests for the flows**~~ **DONE**,
+   `tests/test_complex_call_flows.py` (section 4).
+4. ~~**Re-run the on-the-wire probe**~~ **DONE**, `/root/probe_labels.py` passes
+   against the deployed image. Still worth adding a re-INVITE leg to that probe
+   if there is time in the morning, since the loopback tests cover the logic but
+   the probe is the only check that runs against the real TLS listener.
 5. **Housekeeping that is now overdue** and will muddy evidence if left:
    relock the media allowlist from `0.0.0.0/0` to `132.226.155.215` (real source
    IP is known now), `pkill tcpdump` (pid 116213, moot since David's own egress
@@ -121,31 +138,43 @@ morning.
 
 ## 4. Local synthetic tests to write first
 
-Each of these is our own behavior, provable without David. Model them on the
-existing loopback client in `tests/test_siprec_capture.py`.
+**All written and passing** as of 2026-07-29 19:45 UTC. Local suite 103 passed,
+plus the one pre-existing `test_vcon_creation_and_storage` failure. Kept here as
+the inventory of what is and is not covered going into the call.
 
-- **Re-INVITE re-offer.** INVITE, RTP, then re-INVITE with the same two labels
-  and a third stream `a=label:3` plus rs-metadata adding a participant. Assert
-  the 200 OK carries SDP with three m-lines and three labels, that a recorder
-  exists for label 3, and that the finished vCon has three parties with the
-  third mapped by label rather than position.
-- **Re-INVITE with unchanged SDP.** Assert we still answer with a full SDP
-  echoing the existing ports, and that we do not double-bind recorders or
-  duplicate participants. This is the idempotency case and the likeliest real
-  shape.
-- **Second INVITE, new Call-ID, same `group_id`.** Assert current behavior
-  explicitly, two independent sessions, so the decision in section 2 is made
-  against a documented baseline rather than a guess.
-- **CON-705 under three streams.** The reversed-order fixture in
-  `tests/test_stream_party_mapping.py` covers two. Add a three-stream case with
-  labels out of order, since transfer is where stream order is most likely to
-  stop matching participant order.
-- **1.1 participant_id shape.** The 1.0 fixtures in
-  `tests/test_netsapiens_metadata.py` use a User ID
-  (`1003@dwang.netsapiens.com`); 1.1 uses the leg's SIP Call-ID
-  (`20260729164412058133-0018491486ec5db64acd5aca455acfe8`). Our join reads
-  whatever the metadata says, so this should pass unchanged. Assert it, so the
-  version-agnosticism is pinned rather than assumed.
+`tests/test_complex_call_flows.py` drives the SRS over loopback as a SIPREC
+client and asserts on the wire. Every one of the five was verified load-bearing
+by patching `_on_reoffer` back to the old bare-200 behavior, and every one fails
+against it:
+
+- **Re-INVITE adding a stream.** Third labelled stream plus a third participant.
+  Asserts three m-lines and labels 1/2/3 in the answer, the first two ports
+  unchanged, three recorders, three parties in order, and the xfer-from
+  reference captured from the newer vendor extension.
+- **Re-INVITE with unchanged SDP.** The hold/resume and likeliest real shape.
+  Same ports answered, no double-bound recorders, no duplicated participants or
+  media_streams.
+- **Metadata-only re-INVITE.** A party announced with no media offered still
+  lands, and no recorder is bound for a stream that was never offered.
+- **UPDATE carrying a re-offer.** Same SDP answer as the re-INVITE path.
+- **Second dialog, new Call-ID, same `group_id`.** Documents the current
+  two-independent-sessions baseline explicitly, so CON-708 is decided against an
+  asserted fact rather than a guess.
+
+In `tests/test_stream_party_mapping.py`:
+
+- **Three streams, labels declared out of order** (2, 3, 1) against participants
+  listed in a third order, so no positional reading of either list is correct.
+  Transfer is where stream order is most likely to stop tracking participants.
+- **1.1 `participant_id` shape.** 1.0 used a system user id
+  (`1003@dwang.netsapiens.com`), 1.1 uses the leg's SIP Call-ID. The join reads
+  whatever the metadata says, so both work; now asserted rather than assumed.
+
+**Not covered, know this going in:** no test drives RTP *through* a re-offer, so
+"media keeps flowing on the original ports while a third stream starts" is
+argued from the port assertions rather than proven end to end. If a transfer
+fails tomorrow in a way the wire trace does not explain, that is the first gap to
+suspect.
 
 ## 5. Run of show
 
