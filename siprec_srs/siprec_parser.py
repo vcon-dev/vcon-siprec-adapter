@@ -104,6 +104,7 @@ class SIPRECParser:
                         "connection": session_conn,
                         "payload_types": [int(p) for p in fields[3:] if p.isdigit()],
                         "rtpmap": {},
+                        "label": None,
                     }
                     streams.append(current)
                 else:
@@ -116,6 +117,10 @@ class SIPRECParser:
                     current["rtpmap"][int(rm.group(1))] = {
                         "name": rm.group(2), "rate": int(rm.group(3))
                     }
+                elif val.startswith("label:"):
+                    # RFC 7866 5.2: the label ties this m-line to a <stream>
+                    # in the rs-metadata, and MUST be echoed in our answer.
+                    current["label"] = val[6:].strip()
 
         for s in streams:
             s["codec"] = self._primary_codec(s)

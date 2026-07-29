@@ -361,6 +361,8 @@ class SIPRECServer:
             lines.append(f"m=audio {port} RTP/AVP {pt}")
             lines.append(f"a=rtpmap:{pt} {name}/8000")
             lines.append("a=recvonly")
+            if stream.get("label"):
+                lines.append(f"a=label:{stream['label']}")
         return "\r\n".join(lines) + "\r\n"
 
 
