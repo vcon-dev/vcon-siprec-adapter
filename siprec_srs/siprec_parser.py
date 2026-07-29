@@ -215,6 +215,64 @@ class SIPRECParser:
                 out[label] = pid
         return out
 
+    def parse_session_keys(self, xml_text: str) -> Dict[str, Any]:
+        """Correlation keys from RFC 7865 `<group>` and `<session>`.
+
+        These sit outside the vendor extension, so `parse_vendor_extension`
+        never sees them, and they are the only thing tying a sequence of
+        SIPREC sessions together. NetSapiens closes a session and opens a new
+        one whenever the parties change (David Wang, 2026-07-29), so an
+        attended transfer arrives as three separate dialogs sharing a
+        `group_id` with an incrementing `groupSeq`. Without these keys the
+        three are unrelatable.
+
+        `stream_ids` maps sdp label -> the SRC's own `stream_id`. Those are
+        reused across sessions for the same media leg, which makes them the
+        audio-continuity key across a transfer.
+
+        Every value is treated as an opaque string. Observed `group_id`
+        formats include both a hex digest and a SIP Call-ID with an @host, so
+        nothing here validates shape.
+        """
+        try:
+            root = ET.fromstring(xml_text)
+        except ET.ParseError as e:
+            logger.warning("rs-metadata XML parse failed: %s", e)
+            return {}
+
+        keys: Dict[str, Any] = {}
+        stream_ids: Dict[str, str] = {}
+        for el in root.iter():
+            tag = _localname(el.tag)
+            if tag == "group":
+                if el.get("group_id"):
+                    keys["group_id"] = el.get("group_id")
+                at = next(((c.text or "").strip() for c in el
+                           if _localname(c.tag) == "associate-time"), "")
+                if at:
+                    keys["associate_time"] = at
+            elif tag == "session":
+                if el.get("session_id"):
+                    keys["session_id"] = el.get("session_id")
+                for c in el:
+                    ctag = _localname(c.tag)
+                    text = (c.text or "").strip()
+                    if not text:
+                        continue
+                    if ctag == "group-ref":
+                        keys["group_ref"] = text
+                    elif ctag == "sipSessionID":
+                        keys["sip_session_id"] = text
+            elif tag == "stream":
+                sid = el.get("stream_id")
+                label = next(((c.text or "").strip() for c in el
+                              if _localname(c.tag) == "label"), "")
+                if sid and label:
+                    stream_ids[label] = sid
+        if stream_ids:
+            keys["stream_ids"] = stream_ids
+        return keys
+
     def parse_vendor_extension(self, xml_text: str) -> Dict[str, Any]:
         """Capture a vendor extension block from rs-metadata, verbatim.
 

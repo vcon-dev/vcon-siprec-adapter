@@ -92,6 +92,7 @@ class SIPRECSession:
         self.participants: List[Dict] = []
         self.vendor_extension: Dict = {}
         self.stream_labels: Dict[str, str] = {}  # sdp label -> participant_id
+        self.rs_keys: Dict = {}  # RFC 7865 group/session correlation keys
         self.media_streams: List[Dict] = []
         self.remote_uri = ""
         self.local_uri = ""
@@ -357,6 +358,12 @@ class SIPRECServer:
                 seen.add(p.get("id"))
 
         session.stream_labels.update(self.parser.parse_stream_labels(rs_text))
+        session.rs_keys.update(self.parser.parse_session_keys(rs_text))
+
+        # The SRC's own session id is the correlation key it will quote back to
+        # us; ours is just the dialog Call-ID. Prefer theirs when offered.
+        if session.rs_keys.get("session_id"):
+            session.recording_session_id = session.rs_keys["session_id"]
 
         # Latest non-empty wins: on a transfer the newer extension is the one
         # carrying the xfer-from reference.

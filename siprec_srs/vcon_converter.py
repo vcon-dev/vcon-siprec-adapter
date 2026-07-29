@@ -56,11 +56,21 @@ class VConConverter:
             # `party` and `dialog` are REQUIRED (Vcon.add_tag emits neither),
             # and the speckit Tags Convention prescribes a JSON-stringified
             # object body (the lib emits an array of "key:value" strings).
+            # group_id / groupSeq are tagged, not just buried in metadata: a
+            # transfer arrives as several SIPREC sessions and therefore several
+            # vCons, and the group is the only way to find the siblings.
+            rs_keys = session_data.get('rs_keys') or {}
+            vendor = session_data.get('vendor_extension') or {}
             self._add_tags_attachment(vcon, {
                 "source": "siprec",
                 "call_id": session_data.get('call_id', ''),
                 "recording_session_id": session_data.get('recording_session_id', ''),
                 "session_id": session_data.get('session_id', ''),
+                "rs_group_id": rs_keys.get('group_id', ''),
+                "rs_session_id": rs_keys.get('session_id', ''),
+                "group_seq": str(vendor.get('groupSeq', '')),
+                "by_action": str(vendor.get('byAction', '')),
+                "xferred_group_id": str(vendor.get('xferredGroupID', '')),
                 "conversion_timestamp": datetime.now(timezone.utc).isoformat(),
             })
 
@@ -155,6 +165,12 @@ class VConConverter:
             participant_count = len(session_data.get('participants', []))
             all_party_indices = list(range(participant_count))
             party_of_stream = self._party_of_stream(session_data)
+            rs_keys = session_data.get('rs_keys') or {}
+            label_of_stream = {
+                s['stream_id']: s.get('label')
+                for s in session_data.get('media_streams', [])
+                if s.get('stream_id')
+            }
 
             # Sort streams for deterministic dialog ordering / party mapping.
             for stream_idx, (stream_id, audio_file_path) in enumerate(
@@ -222,15 +238,25 @@ class VConConverter:
                 # in an attachment, not on the Dialog object — Dialog has no
                 # `metadata` field in the spec.
                 dialog_index = len(vcon.dialog) - 1
+                provenance = {
+                    "stream_id": stream_id,
+                    "source": "rtp_capture",
+                }
+                # The SRC's own stream_id, which it reuses across sessions for
+                # the same media leg, so it correlates audio across a transfer
+                # where our per-session stream_id cannot.
+                label = label_of_stream.get(stream_id)
+                rs_stream_id = (rs_keys.get('stream_ids') or {}).get(label)
+                if label:
+                    provenance["label"] = label
+                if rs_stream_id:
+                    provenance["rs_stream_id"] = rs_stream_id
                 vcon.vcon_dict.setdefault("attachments", []).append({
                     "purpose": "stream_provenance",
                     "party": parties_for_stream[0] if parties_for_stream else 0,
                     "dialog": dialog_index,
                     "encoding": "json",
-                    "body": json.dumps({
-                        "stream_id": stream_id,
-                        "source": "rtp_capture",
-                    }),
+                    "body": json.dumps(provenance),
                 })
 
                 # Optional transcription via pluggable provider. The Noop
@@ -263,6 +289,14 @@ class VConConverter:
                 'media_streams': session_data.get('media_streams', []),
                 'source': 'siprec',
             }
+
+            # RFC 7865 group/session keys. Kept verbatim and unvalidated: the
+            # SRC owns their format (observed group_id as both a hex digest and
+            # a SIP Call-ID with an @host), and they are what lets a consumer
+            # stitch a transfer's several sessions back together.
+            rs_keys = session_data.get('rs_keys') or {}
+            if rs_keys:
+                session_info['rs_metadata_keys'] = rs_keys
 
             # Vendor extension block from rs-metadata, verbatim. This is where
             # NetSapiens puts the real calling/called numbers and the reason
