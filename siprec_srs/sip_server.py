@@ -91,6 +91,7 @@ class SIPRECSession:
         self.recording_session_id = ""
         self.participants: List[Dict] = []
         self.vendor_extension: Dict = {}
+        self.stream_labels: Dict[str, str] = {}  # sdp label -> participant_id
         self.media_streams: List[Dict] = []
         self.remote_uri = ""
         self.local_uri = ""
@@ -258,6 +259,7 @@ class SIPRECServer:
             rs_text = rs_meta.decode("utf-8", "replace")
             session.participants = self.parser.parse_rs_metadata(rs_text)
             session.vendor_extension = self.parser.parse_vendor_extension(rs_text)
+            session.stream_labels = self.parser.parse_stream_labels(rs_text)
 
         # Bind an RTP recorder per audio stream and remember the port we
         # advertise for it.

@@ -162,6 +162,59 @@ class SIPRECParser:
             participants.append(self._participant_from_aor(pid, name, aor))
         return participants
 
+    def parse_stream_labels(self, xml_text: str) -> Dict[str, str]:
+        """Return {sdp_label: participant_id} from RFC 7865 associations.
+
+        The join the spec actually defines, which nothing positional can
+        stand in for:
+
+            m= line -> a=label:N -> <stream><label>N</label> -> stream_id
+            -> <participantstreamassoc><send> -> participant_id
+
+        `<send>` is the sending participant, so the stream carrying that
+        label is that participant's audio. Returns {} when the metadata
+        omits the associations, which the caller must treat as "fall back".
+        """
+        try:
+            root = ET.fromstring(xml_text)
+        except ET.ParseError as e:
+            logger.warning("rs-metadata XML parse failed: %s", e)
+            return {}
+
+        label_of_stream: Dict[str, str] = {}   # rs stream_id -> sdp label
+        sends: Dict[str, List[str]] = {}       # participant_id -> stream_ids
+        for el in root.iter():
+            tag = _localname(el.tag)
+            if tag == "stream":
+                sid = el.get("stream_id")
+                label = next(((c.text or "").strip() for c in el
+                             if _localname(c.tag) == "label"), "")
+                if sid and label:
+                    label_of_stream[sid] = label
+            elif tag == "participantstreamassoc":
+                pid = el.get("participant_id")
+                if not pid:
+                    continue
+                sends[pid] = [(c.text or "").strip() for c in el
+                              if _localname(c.tag) == "send" and (c.text or "").strip()]
+
+        out: Dict[str, str] = {}
+        for pid, stream_ids in sends.items():
+            for sid in stream_ids:
+                label = label_of_stream.get(sid)
+                if label is None:
+                    continue
+                if label in out and out[label] != pid:
+                    # Two participants claim the same stream: the metadata is
+                    # not a function of label -> participant, so refuse to
+                    # guess rather than pick by dict order.
+                    logger.warning(
+                        "rs-metadata: label %s sent by both %s and %s; "
+                        "dropping stream mapping", label, out[label], pid)
+                    return {}
+                out[label] = pid
+        return out
+
     def parse_vendor_extension(self, xml_text: str) -> Dict[str, Any]:
         """Capture a vendor extension block from rs-metadata, verbatim.
 

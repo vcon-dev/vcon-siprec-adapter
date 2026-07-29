@@ -111,7 +111,33 @@ class VConConverter:
         except Exception as e:
             logger.error(f"Error adding participants: {e}")
     
-    def _add_audio_dialogs(self, vcon: Vcon, session_data: Dict[str, Any], 
+    def _party_of_stream(self, session_data: Dict[str, Any]) -> Dict[str, int]:
+        """{capture stream_id: party index}, from the rs-metadata associations.
+
+        Completes the RFC 7865 join that `parse_stream_labels` starts: it
+        returns {sdp label: participant_id}, `media_streams` carries our
+        capture `stream_id` alongside the `label` we answered with, and party
+        index is the participant's position in `parties[]`. Streams whose
+        label or participant is missing are simply absent, which sends the
+        caller to the positional fallback for that stream only.
+        """
+        labels = session_data.get('stream_labels') or {}
+        if not labels:
+            return {}
+        index_of_pid = {
+            p.get('id'): i
+            for i, p in enumerate(session_data.get('participants', []))
+            if p.get('id')
+        }
+        out: Dict[str, int] = {}
+        for stream in session_data.get('media_streams', []):
+            pid = labels.get(stream.get('label'))
+            idx = index_of_pid.get(pid)
+            if stream.get('stream_id') and idx is not None:
+                out[stream['stream_id']] = idx
+        return out
+
+    def _add_audio_dialogs(self, vcon: Vcon, session_data: Dict[str, Any],
                           rtp_handler: RTPHandler):
         """Add audio dialogs from captured RTP streams."""
         try:
@@ -128,6 +154,7 @@ class VConConverter:
             
             participant_count = len(session_data.get('participants', []))
             all_party_indices = list(range(participant_count))
+            party_of_stream = self._party_of_stream(session_data)
 
             # Sort streams for deterministic dialog ordering / party mapping.
             for stream_idx, (stream_id, audio_file_path) in enumerate(
@@ -140,11 +167,18 @@ class VConConverter:
                 mime_type = self._get_audio_mime_type(audio_file_path)
                 duration = self._get_audio_duration(audio_file_path)
 
-                # SIPREC streams are typically per-participant. If stream
-                # count matches participant count, map 1:1; otherwise the
-                # stream is treated as covering all parties (best effort
-                # until the sip_signaling extension carries true mapping).
-                if participant_count and len(audio_files) == participant_count:
+                # Prefer the explicit RFC 7865 correlation (see
+                # _party_of_stream). Positional 1:1 is only a fallback: it is
+                # right only when the SRC happens to order its streams the way
+                # it orders its participants, which nothing requires.
+                if stream_id in party_of_stream:
+                    parties_for_stream = [party_of_stream[stream_id]]
+                    originator = party_of_stream[stream_id]
+                elif participant_count and len(audio_files) == participant_count:
+                    logger.warning(
+                        "No rs-metadata stream association for %s; falling back "
+                        "to positional party mapping (index %d)",
+                        stream_id, stream_idx)
                     parties_for_stream = [stream_idx]
                     originator = stream_idx
                 else:
