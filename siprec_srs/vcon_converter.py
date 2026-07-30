@@ -15,6 +15,11 @@ from vcon.party import Party
 from vcon.dialog import Dialog
 from .rtp_handler import RTPHandler
 from .config import LawfulBasisConfig, MediaConfig
+from .media_publisher import (
+    AudioPublisher,
+    PublishingError,
+    create_audio_publisher,
+)
 from .transcription import (
     NoopTranscriptionProvider,
     TranscriptionProvider,
@@ -37,9 +42,16 @@ class VConConverter:
         lawful_basis_config: Optional[LawfulBasisConfig] = None,
         media_config: Optional[MediaConfig] = None,
         transcription_provider: Optional[TranscriptionProvider] = None,
+        audio_publisher: Optional[AudioPublisher] = None,
     ):
         self.lawful_basis_config = lawful_basis_config or LawfulBasisConfig()
         self.media_config = media_config or MediaConfig()
+        self.audio_publisher = audio_publisher
+        if (
+            self.media_config.mode == "external"
+            and self.audio_publisher is None
+        ):
+            self.audio_publisher = create_audio_publisher(self.media_config)
         self.transcription_provider: TranscriptionProvider = (
             transcription_provider or NoopTranscriptionProvider()
         )
@@ -56,11 +68,21 @@ class VConConverter:
             # `party` and `dialog` are REQUIRED (Vcon.add_tag emits neither),
             # and the speckit Tags Convention prescribes a JSON-stringified
             # object body (the lib emits an array of "key:value" strings).
+            # group_id / groupSeq are tagged, not just buried in metadata: a
+            # transfer arrives as several SIPREC sessions and therefore several
+            # vCons, and the group is the only way to find the siblings.
+            rs_keys = session_data.get('rs_keys') or {}
+            vendor = session_data.get('vendor_extension') or {}
             self._add_tags_attachment(vcon, {
                 "source": "siprec",
                 "call_id": session_data.get('call_id', ''),
                 "recording_session_id": session_data.get('recording_session_id', ''),
                 "session_id": session_data.get('session_id', ''),
+                "rs_group_id": rs_keys.get('group_id', ''),
+                "rs_session_id": rs_keys.get('session_id', ''),
+                "group_seq": str(vendor.get('groupSeq', '')),
+                "by_action": str(vendor.get('byAction', '')),
+                "xferred_group_id": str(vendor.get('xferredGroupID', '')),
                 "conversion_timestamp": datetime.now(timezone.utc).isoformat(),
             })
 
@@ -111,9 +133,38 @@ class VConConverter:
         except Exception as e:
             logger.error(f"Error adding participants: {e}")
     
-    def _add_audio_dialogs(self, vcon: Vcon, session_data: Dict[str, Any], 
+    def _party_of_stream(self, session_data: Dict[str, Any]) -> Dict[str, int]:
+        """{capture stream_id: party index}, from the rs-metadata associations.
+
+        Completes the RFC 7865 join that `parse_stream_labels` starts: it
+        returns {sdp label: participant_id}, `media_streams` carries our
+        capture `stream_id` alongside the `label` we answered with, and party
+        index is the participant's position in `parties[]`. Streams whose
+        label or participant is missing are simply absent, which sends the
+        caller to the positional fallback for that stream only.
+        """
+        labels = session_data.get('stream_labels') or {}
+        if not labels:
+            return {}
+        index_of_pid = {
+            p.get('id'): i
+            for i, p in enumerate(session_data.get('participants', []))
+            if p.get('id')
+        }
+        out: Dict[str, int] = {}
+        for stream in session_data.get('media_streams', []):
+            pid = labels.get(stream.get('label'))
+            idx = index_of_pid.get(pid)
+            if stream.get('stream_id') and idx is not None:
+                out[stream['stream_id']] = idx
+        return out
+
+    def _add_audio_dialogs(self, vcon: Vcon, session_data: Dict[str, Any],
                           rtp_handler: RTPHandler):
         """Add audio dialogs from captured RTP streams."""
+        if rtp_handler is None:
+            logger.warning("No RTP handler available for session")
+            return
         try:
             # Get audio files from RTP handler
             audio_files = rtp_handler.get_audio_files()
@@ -128,23 +179,41 @@ class VConConverter:
             
             participant_count = len(session_data.get('participants', []))
             all_party_indices = list(range(participant_count))
+            party_of_stream = self._party_of_stream(session_data)
+            rs_keys = session_data.get('rs_keys') or {}
+            label_of_stream = {
+                s['stream_id']: s.get('label')
+                for s in session_data.get('media_streams', [])
+                if s.get('stream_id')
+            }
 
             # Sort streams for deterministic dialog ordering / party mapping.
             for stream_idx, (stream_id, audio_file_path) in enumerate(
                 sorted(audio_files.items())
             ):
                 if not Path(audio_file_path).exists():
+                    if self.media_config.mode == "external":
+                        raise PublishingError(
+                            f"Audio file not found: {audio_file_path}"
+                        )
                     logger.warning(f"Audio file not found: {audio_file_path}")
                     continue
 
                 mime_type = self._get_audio_mime_type(audio_file_path)
                 duration = self._get_audio_duration(audio_file_path)
 
-                # SIPREC streams are typically per-participant. If stream
-                # count matches participant count, map 1:1; otherwise the
-                # stream is treated as covering all parties (best effort
-                # until the sip_signaling extension carries true mapping).
-                if participant_count and len(audio_files) == participant_count:
+                # Prefer the explicit RFC 7865 correlation (see
+                # _party_of_stream). Positional 1:1 is only a fallback: it is
+                # right only when the SRC happens to order its streams the way
+                # it orders its participants, which nothing requires.
+                if stream_id in party_of_stream:
+                    parties_for_stream = [party_of_stream[stream_id]]
+                    originator = party_of_stream[stream_id]
+                elif participant_count and len(audio_files) == participant_count:
+                    logger.warning(
+                        "No rs-metadata stream association for %s; falling back "
+                        "to positional party mapping (index %d)",
+                        stream_id, stream_idx)
                     parties_for_stream = [stream_idx]
                     originator = stream_idx
                 else:
@@ -165,16 +234,14 @@ class VConConverter:
 
                 # Body vs URL+content_hash: see MediaConfig.
                 if self.media_config.mode == "external":
-                    url = self._external_media_url(audio_file_path)
-                    content_hash = self._sha512_content_hash(audio_file_path)
-                    if not url or not content_hash:
-                        logger.error(
-                            f"External media mode misconfigured for {audio_file_path}; "
-                            f"skipping dialog"
-                        )
-                        continue
-                    dialog_kwargs["url"] = url
-                    dialog_kwargs["content_hash"] = content_hash
+                    object_key = self._media_object_key(
+                        session_data, stream_id, audio_file_path
+                    )
+                    published = self.audio_publisher.publish(
+                        Path(audio_file_path), object_key
+                    )
+                    dialog_kwargs["url"] = published.url
+                    dialog_kwargs["content_hash"] = published.content_hash
                 else:
                     audio_data = self._read_audio_file(audio_file_path)
                     if not audio_data:
@@ -188,15 +255,25 @@ class VConConverter:
                 # in an attachment, not on the Dialog object — Dialog has no
                 # `metadata` field in the spec.
                 dialog_index = len(vcon.dialog) - 1
+                provenance = {
+                    "stream_id": stream_id,
+                    "source": "rtp_capture",
+                }
+                # The SRC's own stream_id, which it reuses across sessions for
+                # the same media leg, so it correlates audio across a transfer
+                # where our per-session stream_id cannot.
+                label = label_of_stream.get(stream_id)
+                rs_stream_id = (rs_keys.get('stream_ids') or {}).get(label)
+                if label:
+                    provenance["label"] = label
+                if rs_stream_id:
+                    provenance["rs_stream_id"] = rs_stream_id
                 vcon.vcon_dict.setdefault("attachments", []).append({
                     "purpose": "stream_provenance",
                     "party": parties_for_stream[0] if parties_for_stream else 0,
                     "dialog": dialog_index,
                     "encoding": "json",
-                    "body": json.dumps({
-                        "stream_id": stream_id,
-                        "source": "rtp_capture",
-                    }),
+                    "body": json.dumps(provenance),
                 })
 
                 # Optional transcription via pluggable provider. The Noop
@@ -210,6 +287,7 @@ class VConConverter:
 
         except Exception as e:
             logger.error(f"Error adding audio dialogs: {e}")
+            raise
     
     def _add_session_metadata_attachment(self, vcon: Vcon, session_data: Dict[str, Any]):
         """Add SIPREC session metadata as a vCon attachment.
@@ -229,6 +307,21 @@ class VConConverter:
                 'media_streams': session_data.get('media_streams', []),
                 'source': 'siprec',
             }
+
+            # RFC 7865 group/session keys. Kept verbatim and unvalidated: the
+            # SRC owns their format (observed group_id as both a hex digest and
+            # a SIP Call-ID with an @host), and they are what lets a consumer
+            # stitch a transfer's several sessions back together.
+            rs_keys = session_data.get('rs_keys') or {}
+            if rs_keys:
+                session_info['rs_metadata_keys'] = rs_keys
+
+            # Vendor extension block from rs-metadata, verbatim. This is where
+            # NetSapiens puts the real calling/called numbers and the reason
+            # for the recording, none of which RFC 7865 has a field for.
+            vendor = session_data.get('vendor_extension') or {}
+            if vendor:
+                session_info['vendor_extension'] = vendor
 
             # The vcon lib's add_attachment() rejects encoding="json"; build
             # the attachment dict directly per the speckit guidance.
@@ -343,6 +436,31 @@ class VConConverter:
         if not base:
             return None
         return f"{base}/{Path(file_path).name}"
+
+    def _media_object_key(
+        self,
+        session_data: Dict[str, Any],
+        stream_id: str,
+        file_path: str,
+    ) -> str:
+        """Build a stable publisher key from configured session fields."""
+        if self.media_config.publisher == "none":
+            return Path(file_path).name
+
+        values = {
+            "recording_session_id": session_data.get(
+                "recording_session_id", ""
+            ),
+            "session_id": session_data.get("session_id", ""),
+            "call_id": session_data.get("call_id", ""),
+            "stream_id": stream_id,
+            "filename": Path(file_path).name,
+        }
+        safe_values = {
+            key: str(value).replace("/", "_").replace("\\", "_")
+            for key, value in values.items()
+        }
+        return self.media_config.key_pattern.format(**safe_values)
 
     def _sha512_content_hash(self, file_path: str) -> Optional[str]:
         """Return spec-form `sha512-<base64url(unpadded) of digest>`."""

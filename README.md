@@ -15,8 +15,9 @@ syntax `0.4.0`).
   `lawful_basis` extension (recording consent / legitimate interest).
 - **JWS signing** (optional) — RS256-sign every vCon before storage and
   delivery using a configured RSA private key.
-- **External-media mode** (optional) — emit `url` + `sha512-<base64url>`
-  `content_hash` instead of inlining audio as base64url.
+- **External-media publishing** (optional) - publish audio to a filesystem or
+  S3 bucket, then emit `url` + `sha512-<base64url>` `content_hash` instead of
+  inlining audio.
 - **Pluggable transcription** — `TranscriptionProvider` Protocol places
   WTF transcripts in `analysis[]` per `draft-howe-vcon-wtf-extension`.
   Default is no-op; plug in Whisper / Deepgram / etc. without modifying
@@ -128,7 +129,18 @@ webhooks:
 
 media:
   mode: "inline"             # "inline" | "external"
-  base_url: null             # required when mode == "external"
+  publisher: "none"          # "none" | "filesystem" | "s3"
+  base_url: null             # optional public/CDN URL override
+  key_pattern: "{recording_session_id}/{stream_id}.wav"
+  filesystem:
+    path: "./recordings"
+  s3:
+    bucket: null
+    region: null
+    prefix: ""
+    endpoint_url: null
+    retry_attempts: 3
+    backoff_factor: 1.0
 
 lawful_basis:
   enabled: true
@@ -147,6 +159,39 @@ health:
 ```
 
 See `config.yaml` in the repo root for the full annotated reference.
+
+### External audio publishing
+
+`media.mode: inline` retains the default self-contained vCon behavior and
+ignores publisher settings.
+
+`media.mode: external` selects one of these publishers:
+
+- `none` retains the previous operator-managed behavior. The adapter hashes
+  the local WAV and composes its URL from `base_url` plus the WAV filename.
+  `base_url` is required because the adapter does not copy the file.
+- `filesystem` atomically copies each WAV below `filesystem.path`. If
+  `base_url` is set, dialogs use that public or CDN URL. Otherwise, dialogs
+  contain the stored file's absolute `file://` URL. Mount the destination into
+  the container when running under Docker.
+- `s3` uploads each WAV to `s3.bucket` using `key_pattern` and `s3.prefix`.
+  If `base_url` is set, dialogs use it as a CDN or public URL origin.
+  Otherwise, the adapter derives the standard S3 HTTPS object URL.
+  `endpoint_url` supports S3-compatible stores.
+
+S3 credentials come from boto3's standard AWS credential provider chain,
+including IAM roles, web identity, shared credentials, and the
+`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_SESSION_TOKEN`
+environment variables. Do not put credentials in `config.yaml`.
+
+The minimal S3 identity policy needs `s3:PutObject` for the configured bucket
+and prefix. The adapter does not list or delete objects. Bucket lifecycle rules
+or filesystem operations own retention.
+
+Publishing fails closed. S3 retries transient network, throttling, and server
+errors using bounded exponential backoff. If any stream still fails, the
+adapter does not sign, store, or deliver a partial vCon, and it keeps temporary
+WAV files for operator recovery. It does not fall back to inline audio.
 
 ## Generated vCon Format
 

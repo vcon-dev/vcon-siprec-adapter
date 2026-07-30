@@ -33,10 +33,26 @@ webhooks:
 
 media:
   # "inline" embeds audio as base64url in the Dialog body (default,
-  # self-contained but large). "external" emits url + content_hash and
-  # expects audio to be published separately under base_url.
+  # self-contained but large). "external" publishes audio separately and
+  # emits url + content_hash. A publish failure aborts vCon emission and
+  # preserves the temporary WAV for recovery.
   mode: "inline"
+  # "none" preserves operator-managed publishing and requires base_url.
+  # "filesystem" copies audio to filesystem.path. "s3" uploads to s3.bucket.
+  publisher: "none"
+  # Optional public/CDN URL override. Without it, filesystem emits file://
+  # URLs and S3 derives the HTTPS object URL.
   base_url: null  # e.g. "https://media.example.com/recordings"
+  key_pattern: "{recording_session_id}/{stream_id}.wav"
+  filesystem:
+    path: "./recordings"
+  s3:
+    bucket: null
+    region: null
+    prefix: ""
+    endpoint_url: null  # Optional S3-compatible endpoint
+    retry_attempts: 3
+    backoff_factor: 1.0
 
 signing:
   # When enabled, vCons are JWS-signed in place after extension attachments

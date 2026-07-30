@@ -63,6 +63,21 @@ def _localname(tag: str) -> str:
     return tag.split("}", 1)[1] if "}" in tag else tag
 
 
+def _is_phone_number(s: str) -> bool:
+    """True for something dialable outside the PBX, not an extension.
+
+    `+15085551234` and `8587645225` qualify; `1003` does not. Seven digits
+    is the shortest real subscriber number (NANP local), so anything under
+    that is treated as an internal extension.
+    """
+    if not s:
+        return False
+    digits = re.sub(r"[^\d]", "", s)
+    if not re.fullmatch(r"\+?[\d\-().\s]+", s):
+        return False
+    return s.startswith("+") or len(digits) >= 7
+
+
 class SIPRECParser:
     """Parse SDP and rs-metadata out of a SIPREC INVITE."""
 
@@ -89,6 +104,7 @@ class SIPRECParser:
                         "connection": session_conn,
                         "payload_types": [int(p) for p in fields[3:] if p.isdigit()],
                         "rtpmap": {},
+                        "label": None,
                     }
                     streams.append(current)
                 else:
@@ -101,6 +117,10 @@ class SIPRECParser:
                     current["rtpmap"][int(rm.group(1))] = {
                         "name": rm.group(2), "rate": int(rm.group(3))
                     }
+                elif val.startswith("label:"):
+                    # RFC 7866 5.2: the label ties this m-line to a <stream>
+                    # in the rs-metadata, and MUST be echoed in our answer.
+                    current["label"] = val[6:].strip()
 
         for s in streams:
             s["codec"] = self._primary_codec(s)
@@ -142,18 +162,204 @@ class SIPRECParser:
             participants.append(self._participant_from_aor(pid, name, aor))
         return participants
 
+    def parse_stream_labels(self, xml_text: str) -> Dict[str, str]:
+        """Return {sdp_label: participant_id} from RFC 7865 associations.
+
+        The join the spec actually defines, which nothing positional can
+        stand in for:
+
+            m= line -> a=label:N -> <stream><label>N</label> -> stream_id
+            -> <participantstreamassoc><send> -> participant_id
+
+        `<send>` is the sending participant, so the stream carrying that
+        label is that participant's audio. Returns {} when the metadata
+        omits the associations, which the caller must treat as "fall back".
+        """
+        try:
+            root = ET.fromstring(xml_text)
+        except ET.ParseError as e:
+            logger.warning("rs-metadata XML parse failed: %s", e)
+            return {}
+
+        label_of_stream: Dict[str, str] = {}   # rs stream_id -> sdp label
+        sends: Dict[str, List[str]] = {}       # participant_id -> stream_ids
+        for el in root.iter():
+            tag = _localname(el.tag)
+            if tag == "stream":
+                sid = el.get("stream_id")
+                label = next(((c.text or "").strip() for c in el
+                             if _localname(c.tag) == "label"), "")
+                if sid and label:
+                    label_of_stream[sid] = label
+            elif tag == "participantstreamassoc":
+                pid = el.get("participant_id")
+                if not pid:
+                    continue
+                sends[pid] = [(c.text or "").strip() for c in el
+                              if _localname(c.tag) == "send" and (c.text or "").strip()]
+
+        out: Dict[str, str] = {}
+        for pid, stream_ids in sends.items():
+            for sid in stream_ids:
+                label = label_of_stream.get(sid)
+                if label is None:
+                    continue
+                if label in out and out[label] != pid:
+                    # Two participants claim the same stream: the metadata is
+                    # not a function of label -> participant, so refuse to
+                    # guess rather than pick by dict order.
+                    logger.warning(
+                        "rs-metadata: label %s sent by both %s and %s; "
+                        "dropping stream mapping", label, out[label], pid)
+                    return {}
+                out[label] = pid
+        return out
+
+    def parse_session_keys(self, xml_text: str) -> Dict[str, Any]:
+        """Correlation keys from RFC 7865 `<group>` and `<session>`.
+
+        These sit outside the vendor extension, so `parse_vendor_extension`
+        never sees them, and they are the only thing tying a sequence of
+        SIPREC sessions together. NetSapiens closes a session and opens a new
+        one whenever the parties change (David Wang, 2026-07-29), so an
+        attended transfer arrives as three separate dialogs sharing a
+        `group_id` with an incrementing `groupSeq`. Without these keys the
+        three are unrelatable.
+
+        `stream_ids` maps sdp label -> the SRC's own `stream_id`. Those are
+        reused across sessions for the same media leg, which makes them the
+        audio-continuity key across a transfer.
+
+        Every value is treated as an opaque string. Observed `group_id`
+        formats include both a hex digest and a SIP Call-ID with an @host, so
+        nothing here validates shape.
+        """
+        try:
+            root = ET.fromstring(xml_text)
+        except ET.ParseError as e:
+            logger.warning("rs-metadata XML parse failed: %s", e)
+            return {}
+
+        keys: Dict[str, Any] = {}
+        stream_ids: Dict[str, str] = {}
+        for el in root.iter():
+            tag = _localname(el.tag)
+            if tag == "group":
+                if el.get("group_id"):
+                    keys["group_id"] = el.get("group_id")
+                at = next(((c.text or "").strip() for c in el
+                           if _localname(c.tag) == "associate-time"), "")
+                if at:
+                    keys["associate_time"] = at
+            elif tag == "session":
+                if el.get("session_id"):
+                    keys["session_id"] = el.get("session_id")
+                for c in el:
+                    ctag = _localname(c.tag)
+                    text = (c.text or "").strip()
+                    if not text:
+                        continue
+                    if ctag == "group-ref":
+                        keys["group_ref"] = text
+                    elif ctag == "sipSessionID":
+                        keys["sip_session_id"] = text
+            elif tag == "stream":
+                sid = el.get("stream_id")
+                label = next(((c.text or "").strip() for c in el
+                              if _localname(c.tag) == "label"), "")
+                if sid and label:
+                    stream_ids[label] = sid
+        if stream_ids:
+            keys["stream_ids"] = stream_ids
+        return keys
+
+    def parse_vendor_extension(self, xml_text: str) -> Dict[str, Any]:
+        """Capture a vendor extension block from rs-metadata, verbatim.
+
+        RFC 7865 lets an SRC hang its own namespaced element off `recording`.
+        NetSapiens uses `netsapiensExtension` (schema.netsapiens.com), which
+        carries what RFC 7865 has nowhere to put: the real calling/called
+        numbers, the tenant, and why the call was recorded (`byAction`,
+        `byUserID` for a forward).
+
+        Deliberately schema-agnostic: every child element and attribute is
+        captured by local name, whatever the declared `version`. NetSapiens
+        moved 1.0 -> 1.1 on 2026-07-25 adding fields for complex call
+        scenarios, and we have not seen a 1.1 payload. Enumerating known
+        fields here would silently drop whatever 1.1 added, so nothing is
+        enumerated. Repeated elements (e.g. `user`) collect into a list.
+        """
+        try:
+            root = ET.fromstring(xml_text)
+        except ET.ParseError as e:
+            logger.warning("rs-metadata XML parse failed: %s", e)
+            return {}
+
+        for child in root:
+            tag = _localname(child.tag)
+            if not tag.lower().endswith("extension"):
+                continue
+            ext = self._element_to_dict(child)
+            ext["_element"] = tag
+            ns = child.tag.split("}", 1)[0].lstrip("{") if "}" in child.tag else ""
+            if ns:
+                ext["_namespace"] = ns
+            return ext
+        return {}
+
+    def _element_to_dict(self, el) -> Dict[str, Any]:
+        """Recursively flatten an element into attrs, text and children."""
+        out: Dict[str, Any] = {}
+        for k, v in el.attrib.items():
+            out[_localname(k)] = v
+        for child in el:
+            tag = _localname(child.tag)
+            grand = self._element_to_dict(child)
+            text = (child.text or "").strip()
+            value: Any = grand if grand else text
+            if grand and text:
+                value = dict(grand, _text=text)
+            if tag in out:
+                if not isinstance(out[tag], list):
+                    out[tag] = [out[tag]]
+                out[tag].append(value)
+            else:
+                out[tag] = value
+        return out
+
     def _participant_from_aor(self, pid: str, name: str, aor: str) -> Dict[str, Any]:
-        tel, mailto = "", ""
+        """Map an AOR to spec-typed party fields, keyed on the URI scheme.
+
+        The scheme is authoritative. A `sip:` AOR is never an email address,
+        however much its user@host shape resembles one, and a PBX extension
+        in a `sip:` AOR is not a dialable telephone number. Getting this
+        wrong puts fabricated `tel`/`mailto` values into the vCon, so when
+        the scheme does not prove a type, both are left empty and the full
+        AOR is preserved in `uri`.
+        """
+        scheme = ""
         user = aor
-        for scheme in ("sip:", "sips:", "tel:", "mailto:"):
-            if user.lower().startswith(scheme):
-                user = user[len(scheme):]
+        for s in ("sips:", "sip:", "tel:", "mailto:"):
+            if user.lower().startswith(s):
+                scheme, user = s.rstrip(":"), user[len(s):]
                 break
         userpart = user.split("@", 1)[0].split(";", 1)[0]
-        if aor.lower().startswith("tel:") or re.fullmatch(r"\+?[\d\-().\s]+", userpart or ""):
+
+        tel, mailto = "", ""
+        if scheme == "tel":
             tel = userpart
-        elif aor.lower().startswith("mailto:") or ("@" in user and "." in user.split("@", 1)[1]):
+        elif scheme == "mailto":
             mailto = user.split(";", 1)[0]
+        elif scheme in ("sip", "sips"):
+            # Only a genuine phone number, not an internal extension. Bare
+            # extensions (NetSapiens sends sip:1003@domain) have no meaning
+            # outside the PBX; the real E.164 numbers arrive in the vendor
+            # extension instead.
+            if _is_phone_number(userpart):
+                tel = userpart
+        elif not scheme and _is_phone_number(userpart):
+            tel = userpart
+
         return {
             "id": pid,
             "role": "participant",

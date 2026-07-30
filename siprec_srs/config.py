@@ -76,19 +76,40 @@ class RTPConfig:
 
 
 @dataclass
+class FilesystemMediaConfig:
+    """Durable filesystem destination for externally referenced audio."""
+    path: str = "./recordings"
+
+
+@dataclass
+class S3MediaConfig:
+    """S3 destination for externally referenced audio."""
+    bucket: Optional[str] = None
+    region: Optional[str] = None
+    prefix: str = ""
+    endpoint_url: Optional[str] = None
+    retry_attempts: int = 3
+    backoff_factor: float = 1.0
+
+
+@dataclass
 class MediaConfig:
     """How to embed audio in emitted vCons.
 
     `mode: "inline"` (default): audio bytes are base64url-encoded into the
     Dialog `body`. Vcons are self-contained but large.
 
-    `mode: "external"`: audio is published to `base_url + filename` and the
-    Dialog carries `url` + `content_hash` (sha512-base64url) per spec. The
-    publishing step itself is the operator's responsibility — this mode
-    just ensures the emitted vCon points at the right URL with a real hash.
+    `mode: "external"`: audio is published by the configured publisher and
+    the Dialog carries `url` + `content_hash` (sha512-base64url) per spec.
     """
     mode: str = "inline"  # "inline" | "external"
-    base_url: Optional[str] = None  # required when mode == "external"
+    publisher: str = "none"  # "none" | "filesystem" | "s3"
+    base_url: Optional[str] = None
+    key_pattern: str = "{recording_session_id}/{stream_id}.wav"
+    filesystem: FilesystemMediaConfig = field(
+        default_factory=FilesystemMediaConfig
+    )
+    s3: S3MediaConfig = field(default_factory=S3MediaConfig)
 
 
 @dataclass
@@ -310,9 +331,32 @@ class ConfigManager:
         # Parse media configuration
         if 'media' in config_data:
             md = config_data['media']
+            filesystem_data = md.get('filesystem') or {}
+            s3_data = md.get('s3') or {}
             config.media = MediaConfig(
                 mode=md.get('mode', config.media.mode),
+                publisher=md.get('publisher', config.media.publisher),
                 base_url=md.get('base_url', config.media.base_url),
+                key_pattern=md.get('key_pattern', config.media.key_pattern),
+                filesystem=FilesystemMediaConfig(
+                    path=filesystem_data.get(
+                        'path', config.media.filesystem.path
+                    ),
+                ),
+                s3=S3MediaConfig(
+                    bucket=s3_data.get('bucket', config.media.s3.bucket),
+                    region=s3_data.get('region', config.media.s3.region),
+                    prefix=s3_data.get('prefix', config.media.s3.prefix),
+                    endpoint_url=s3_data.get(
+                        'endpoint_url', config.media.s3.endpoint_url
+                    ),
+                    retry_attempts=s3_data.get(
+                        'retry_attempts', config.media.s3.retry_attempts
+                    ),
+                    backoff_factor=s3_data.get(
+                        'backoff_factor', config.media.s3.backoff_factor
+                    ),
+                ),
             )
 
         # Parse lawful_basis configuration
@@ -386,6 +430,55 @@ class ConfigManager:
         for endpoint in config.webhooks.endpoints:
             if not endpoint.url.startswith(('http://', 'https://')):
                 errors.append(f"Invalid webhook URL: {endpoint.url}")
+
+        # Validate external media publishing.
+        if config.media.mode not in ('inline', 'external'):
+            errors.append(f"Invalid media mode: {config.media.mode}")
+        if config.media.publisher not in ('none', 'filesystem', 's3'):
+            errors.append(f"Invalid media publisher: {config.media.publisher}")
+        if config.media.mode == 'external':
+            if config.media.publisher == 'none' and not config.media.base_url:
+                errors.append(
+                    "media.base_url is required when media.publisher is none"
+                )
+            if (
+                config.media.publisher == 'filesystem'
+                and not config.media.filesystem.path
+            ):
+                errors.append(
+                    "media.filesystem.path is required for filesystem publishing"
+                )
+            elif config.media.publisher == 'filesystem':
+                try:
+                    media_path = Path(config.media.filesystem.path)
+                    media_path.mkdir(parents=True, exist_ok=True)
+                    if not os.access(media_path, os.W_OK):
+                        errors.append(
+                            "media.filesystem.path is not writable: "
+                            f"{media_path}"
+                        )
+                except OSError as exc:
+                    errors.append(
+                        "Cannot create media.filesystem.path: "
+                        f"{exc}"
+                    )
+            if config.media.publisher == 's3' and not config.media.s3.bucket:
+                errors.append("media.s3.bucket is required for S3 publishing")
+            if config.media.s3.retry_attempts < 1:
+                errors.append("media.s3.retry_attempts must be at least 1")
+            if config.media.s3.backoff_factor < 0:
+                errors.append("media.s3.backoff_factor cannot be negative")
+
+            try:
+                config.media.key_pattern.format(
+                    recording_session_id="recording",
+                    session_id="session",
+                    call_id="call",
+                    stream_id="stream",
+                    filename="stream.wav",
+                )
+            except (KeyError, ValueError) as exc:
+                errors.append(f"Invalid media.key_pattern: {exc}")
         
         if errors:
             for error in errors:
