@@ -76,6 +76,11 @@ rtp:
   audio_format: "wav"
   sample_rate: 8000
   channels: 1
+  # RTP listen range. Two ports are consumed per recorded stream, so this
+  # range caps concurrent recordings. If you widen it, widen the published
+  # range in docker-compose.yml and the host firewall to match.
+  port_range_start: 10000
+  port_range_end: 10100
 
 lawful_basis:
   enabled: true

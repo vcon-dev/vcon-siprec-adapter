@@ -2,11 +2,10 @@
 
 Welcome. This guide gets a new contributor productive on the SIPREC →
 vCon adapter. It assumes you've read the top-level `README.md` and
-have Python 3.8+ available.
+have Python 3.12+ available (a venv is enough; no PJSIP).
 
-> **Note:** This guide was hand-authored from the post-refactor codebase
-> (after the `refactor/phase1-spec-compliance` merge, commit `56c5da8`).
-> Re-run `/understand` to regenerate a knowledge-graph-driven version.
+> Updated 2026-07-30 for the pure-Python capture path, NetSapiens interop
+> fixes, and external filesystem/S3 media publishing.
 
 ---
 
@@ -15,16 +14,16 @@ have Python 3.8+ available.
 | | |
 |---|---|
 | **Name** | `siprec-srs-vcon` |
-| **Language** | Python 3.8+ (asyncio) |
+| **Language** | Python 3.12 (asyncio); Docker image is `python:3.12-slim` |
 | **Domain** | Telephony — SIPREC capture, vCon emission |
 | **Spec target** | IETF `draft-ietf-vcon-vcon-core-02` (vCon syntax `0.4.0`) |
 | **License** | MIT |
-| **Tests** | 66 passing (offline; one integration test needs PJSIP) |
+| **Tests** | 125 collected offline (no PJSIP / `pjsua2`) |
 
 **What it does in one sentence:** receives SIPREC INVITE requests on
 SIP/UDP/TCP/TLS, captures the RTP audio streams, and emits a
-spec-compliant vCon (with optional JWS signing) to local storage and
-configured webhook receivers.
+spec-compliant vCon (with optional JWS signing and external audio
+publishing) to local storage and configured webhook receivers.
 
 ---
 
@@ -43,12 +42,13 @@ configured webhook receivers.
                                 ▲
 ┌─────────────────────────────────────────────────────────────────┐
 │                  Layer 3 — vCon Construction                    │
-│   vcon_converter.py  │  vcon_extensions.py  │  transcription.py │
+│  vcon_converter.py │ vcon_extensions.py │ transcription.py      │
+│                    │ media_publisher.py (external audio)        │
 └─────────────────────────────────────────────────────────────────┘
                                 ▲
 ┌─────────────────────────────────────────────────────────────────┐
 │                    Layer 2 — Capture                            │
-│      sip_server.py   │   siprec_parser.py   │   rtp_handler.py  │
+│      sip_server.py   │   siprec_parser.py   │   rtp_recorder.py │
 └─────────────────────────────────────────────────────────────────┘
                                 ▲
 ┌─────────────────────────────────────────────────────────────────┐
@@ -63,51 +63,48 @@ configured webhook receivers.
 plus `ConfigManager` which loads from YAML or env vars and validates.
 
 **`main.py`** is the entry point. `SIPRECSRSApp` wires every component
-together: SIP server, RTP capture, conversion, signing, storage,
-webhook delivery, health endpoint.
+together and registers `_on_session_complete` for BYE-driven emission.
 
 **`siprec_srs/cli.py`** is the packaged shim for the `siprec-srs`
 console script (since `main.py` lives at the repo root, not inside the
 package).
 
 ### Layer 2 — Capture
-**`sip_server.py`** — pjsua2-backed SIP listener. Accepts SIPREC
-INVITEs, manages call lifecycle, fires session callbacks.
+**`sip_server.py`** — pure-Python asyncio SIP UAS. Accepts SIPREC
+INVITEs (UDP/TCP/TLS), answers SDP (including `a=label` echo), binds
+`RTPRecorder` instances in the configured RTP port range, absorbs
+re-INVITE/UPDATE metadata, and fires the session-complete callback on BYE.
 
-**`siprec_parser.py`** — extracts SIPREC metadata (call_id,
-recording-session-id, party URIs, codec list) from `pjsua2.CallInfo`
-and SDP.
+**`siprec_parser.py`** — extracts SDP + `application/rs-metadata+xml`
+(participants, stream labels, NetSapiens vendor extensions / group keys).
 
-**`rtp_handler.py`** — captures RTP streams to per-stream WAV files.
-Returns `{stream_id: file_path}` to the converter.
+**`rtp_recorder.py`** — asyncio UDP RTP capture to per-stream WAV files
+(G.711 via stdlib/`audioop`). Returns `{stream_id: file_path}` via the
+session’s `get_audio_files()` contract.
+
+> `rtp_handler.py` is a legacy helper kept for typing/tests. Runtime
+> capture uses `rtp_recorder.py`.
 
 ### Layer 3 — vCon Construction
-**`vcon_converter.py`** — heart of the adapter. `VConConverter` takes
-parsed session_data + an `RTPHandler` and emits a `Vcon` object.
-Responsible for spec-compliant party/dialog/attachment shape.
+**`vcon_converter.py`** — heart of the adapter. Builds parties, recording
+dialogs, attachments, and optional external media references.
 
-**`vcon_extensions.py`** — pure helpers for the `sip-signaling` and
-`lawful_basis` extensions. Operates directly on `vcon_dict` because
-some extension shapes (`type: "lawful_basis"`) don't fit the lib's
-core attachment model.
+**`media_publisher.py`** — `none` / `filesystem` / `s3` publishers used
+when `media.mode: external`.
 
-**`transcription.py`** — `TranscriptionProvider` Protocol +
-`NoopTranscriptionProvider` default. Adapters that integrate Whisper,
-Deepgram, or any ASR plug in here without changing the converter.
+**`vcon_extensions.py`** — pure helpers for `sip-signaling` and
+`lawful_basis`.
+
+**`transcription.py`** — `TranscriptionProvider` Protocol + noop default.
 
 ### Layer 4 — Cryptography & Audit
-**`signing.py`** — `Signer` class wrapping `Vcon.sign()` (RS256 JWS).
-Loads the PEM key once at startup so misconfiguration fails fast.
-Rejects non-RSA keys explicitly.
+**`signing.py`** — `Signer` wrapping `Vcon.sign()` (RS256 JWS).
 
 ### Layer 5 — Egress
-**`storage_handler.py`** — local-filesystem persistence with
-configurable filename pattern, search, cleanup, organization-by-date.
+**`storage_handler.py`** — local-filesystem persistence of vCon JSON.
 
-**`webhook_delivery.py`** — async POST to configured endpoints with:
-canonical body serialization (HMAC-stable), `X-Hub-Signature-256`,
-`Idempotency-Key` (= vCon UUID), exponential backoff, and a
-dead-letter queue for vCons that exhaust all retries on every endpoint.
+**`webhook_delivery.py`** — async POST with HMAC, idempotency key,
+retries, and optional DLQ.
 
 **`health_server.py`** — aiohttp `/healthz` + Prometheus `/metrics`.
 
@@ -117,99 +114,75 @@ dead-letter queue for vCons that exhaust all retries on every endpoint.
 
 ### vCon = Virtualized Conversation
 A standardized JSON container for conversation data (parties, dialogs,
-attachments, analysis, signatures). The spec target is
-`draft-ietf-vcon-vcon-core-02` with syntax parameter `"0.4.0"`.
+attachments, analysis, signatures). Spec target:
+`draft-ietf-vcon-vcon-core-02` with syntax `"0.4.0"`.
 
-### Spec-compliance non-negotiables (from speckit)
-- Field is **`schema`** on analysis, never `schema_version`. **`vendor`**
+### Spec-compliance non-negotiables
+- Analysis field is **`schema`**, never `schema_version`. **`vendor`**
   REQUIRED on every analysis entry.
-- Field is **`purpose`** on attachments, never `type` (lawful_basis is
-  the documented exception).
+- Attachments use **`purpose`**, never `type` (`lawful_basis` is the
+  documented exception).
 - Body is always a **string** — JSON content goes through `json.dumps`
   with `encoding: "json"`.
 - External references require both `url` and `content_hash` formatted
   `sha512-<base64url-unpadded>`.
-- All vCon-payload timestamps are ISO-8601 with explicit timezone.
+- Timestamps are ISO-8601 with explicit timezone.
+- Tags live in a `purpose: "tags"` attachment, not a top-level object.
 
-### Pluggable provider pattern
-The codebase uses `Protocol` interfaces for extensibility:
-- `TranscriptionProvider` (in `transcription.py`) — ASR plug-in seam.
-- A future `AnalysisProvider` would mirror it for LLM-driven analysis.
-
-### vcon library quirks (you WILL hit these)
-The upstream `vcon` Python lib has subtleties documented inline:
-- `Vcon.build_new()` does **not** set syntax `"0.4.0"`; the converter
-  writes it explicitly via `vcon.vcon_dict["vcon"] = "0.4.0"`.
-- `add_attachment()` rejects `encoding="json"`; build the dict and
-  append directly to `vcon_dict["attachments"]`.
-- `vcon.is_valid()` rejects extension-defined attachments that legally
-  use `type:` (lawful_basis); we don't gate delivery on it.
-- Default empty `redacted: {}` and `group: []` are emitted by the lib
-  and stripped by `_strip_default_empty_fields()`.
-
-### Two media modes
-- **inline** (default): audio in Dialog `body` as base64url.
-- **external**: audio published separately, Dialog carries `url` +
-  `content_hash`. Operator is responsible for the upload.
+### Media modes and publishers
+- **`mode: inline`** (default): audio in Dialog `body` as base64url.
+  Publisher settings are ignored.
+- **`mode: external`**: Dialog carries `url` + `content_hash`.
+  - `publisher: none` — operator publishes bytes; adapter hashes and
+    composes `base_url` + filename (`base_url` required).
+  - `publisher: filesystem` — adapter copies WAV under
+    `filesystem.path`; URL is `file://` or `base_url` override.
+  - `publisher: s3` — adapter uploads to `s3.bucket`; URL is derived
+    HTTPS or `base_url` override.
+- Publish failures are fail-closed: no signed/stored/delivered vCon, and
+  temporary WAVs are retained.
 
 ### Spec exceptions you must remember
-- `lawful_basis` attachments use **`type:`** not `purpose:` — per
-  `draft-howe-vcon-lawful-basis`.
-- Transcripts go in **`analysis[]`** not `attachments[]` — per
-  `draft-howe-vcon-wtf-extension`.
+- `lawful_basis` attachments use **`type:`** not `purpose:`.
+- Transcripts go in **`analysis[]`** not `attachments[]`.
 - Every extension used MUST be declared in top-level `extensions[]`.
 
 ---
 
 ## 4. Guided Tour
 
-Follow these in order to understand the request → vCon flow:
+### Step 1 — Read config end to end
+Start at `config.yaml`, then `siprec_srs/config.py`.
 
-### Step 1 — Read a config file end to end
-Start at `config.yaml` (commented), then `siprec_srs/config.py`. This
-is the simplest module and shows the surface area: server, storage,
-webhooks, media, lawful_basis, signing, health.
-
-### Step 2 — Trace a session in `main.py`
-Open `SIPRECSRSApp._on_session_created`. This is the orchestration
-sequence:
-1. Build session_data dict from the SIP session.
-2. `vcon_converter.convert_session_to_vcon(...)` — Layer 3.
-3. `signer.sign(vcon)` if signing enabled — Layer 4.
-4. `storage_handler.save_vcon(...)` — Layer 5.
-5. `webhook_delivery.deliver_vcon(...)` — Layer 5.
+### Step 2 — Trace a completed session in `main.py`
+Open `SIPRECSRSApp._on_session_complete` (fired after BYE):
+1. Build `session_data` from the finished SIPREC session.
+2. `vcon_converter.convert_session_to_vcon(...)` (publishes audio first
+   when external).
+3. Optional `signer.sign(vcon)`.
+4. `storage_handler.save_vcon(...)`.
+5. `webhook_delivery.deliver_vcon(...)`.
+6. Cleanup temporary WAVs only on the success path.
 
 ### Step 3 — Read `VConConverter.convert_session_to_vcon`
-This is the spec-compliance core. Walk through:
-- `Vcon.build_new()` + setting syntax to `"0.4.0"`.
-- `_add_participants` (note: drops non-spec `role`/`uuid` kwargs).
-- `_add_audio_dialogs` (per-stream party indexing, base64url encoding,
-  inline-vs-external mode).
-- `_add_session_metadata_attachment` (NOT a synthetic text dialog).
-- `_add_sip_signaling` (extension declaration + `sip_call_id` stamp).
-- `_add_lawful_basis` (uses `type:` exception).
-- `_strip_default_empty_fields` (lib quirk cleanup).
+Walk `_add_participants`, `_add_audio_dialogs` (inline vs publish),
+tags / session metadata / sip-signaling / lawful_basis attachments.
 
-### Step 4 — Read `vcon_extensions.py`
-Pure functions, no I/O. Cleanest place to learn the spec-attachment
-shape. Note how each helper calls `declare_extension(...)` so the
-extension is registered in `extensions[]` exactly when an attachment
-is emitted.
+### Step 4 — Read `media_publisher.py` and `vcon_extensions.py`
+Publisher contract + extension attachment helpers.
 
 ### Step 5 — Run the tests
 ```bash
-.venv/bin/python -m pytest tests/ --ignore=tests/test_integration.py -v
+.venv/bin/python -m pytest -q
 ```
 Read at least:
-- `test_vcon_extensions.py` — spec-shape contracts (no lib needed).
-- `test_vcon_converter.py` — integration with the `vcon` lib.
-- `test_webhook_delivery.py::test_signed_delivery_round_trip` — best
-  one-shot demo of the egress layer; it spins up an in-process aiohttp
-  server and verifies HMAC signatures end-to-end.
+- `tests/test_siprec_capture.py` — loopback INVITE/RTP/BYE.
+- `tests/test_media_publisher.py` — filesystem + S3 publishers.
+- `tests/test_vcon_converter.py` — emitted vCon shape.
+- `tests/test_webhook_delivery.py` — HMAC round-trip.
 
-### Step 6 — Read the CHANGELOG
-`CHANGELOG.md` summarizes what landed in the four-phase refactor and
-why. It's the fastest catch-up on architectural decisions.
+### Step 6 — Skim ops docs
+`docs/README.md` indexes deploy and interop runbooks.
 
 ---
 
@@ -218,23 +191,24 @@ why. It's the fastest catch-up on architectural decisions.
 ### Layer 1 — Foundation
 | File | Purpose |
 |---|---|
-| `config.yaml` | Annotated configuration template — read first |
+| `config.yaml` | Annotated configuration template |
 | `siprec_srs/config.py` | Dataclass config + YAML/env loading |
-| `main.py` | Entry point, app wiring, session orchestration |
+| `main.py` | Entry point, session-complete orchestration |
 | `siprec_srs/cli.py` | `siprec-srs` console-script shim |
-| `.env.example` | Env-var template for the subset that's env-loadable |
+| `.env.example` | Env-var template |
 
 ### Layer 2 — Capture
 | File | Purpose |
 |---|---|
-| `siprec_srs/sip_server.py` | pjsua2 SIP listener, call lifecycle |
-| `siprec_srs/siprec_parser.py` | SIPREC metadata extraction |
-| `siprec_srs/rtp_handler.py` | RTP capture → WAV files |
+| `siprec_srs/sip_server.py` | Asyncio SIP UAS, call lifecycle |
+| `siprec_srs/siprec_parser.py` | SDP + rs-metadata extraction |
+| `siprec_srs/rtp_recorder.py` | RTP → WAV capture |
 
 ### Layer 3 — vCon Construction
 | File | Purpose |
 |---|---|
-| `siprec_srs/vcon_converter.py` | session_data → spec-compliant `Vcon` |
+| `siprec_srs/vcon_converter.py` | session_data → `Vcon` |
+| `siprec_srs/media_publisher.py` | External audio publishers |
 | `siprec_srs/vcon_extensions.py` | sip-signaling + lawful_basis helpers |
 | `siprec_srs/transcription.py` | Pluggable ASR / WTF analysis interface |
 
@@ -250,81 +224,46 @@ why. It's the fastest catch-up on architectural decisions.
 | `siprec_srs/webhook_delivery.py` | HMAC + idempotency + retries + DLQ |
 | `siprec_srs/health_server.py` | `/healthz` + Prometheus `/metrics` |
 
-### Tests (all passing offline)
-| File | What it covers |
-|---|---|
-| `tests/test_vcon_extensions.py` | 14 — spec-shape, no lib dep |
-| `tests/test_vcon_converter.py` | 16 — full converter integration |
-| `tests/test_webhook_delivery.py` | 9 — HMAC, idempotency, DLQ, round-trip |
-| `tests/test_external_media.py` | 5 — sha512 hash + external mode |
-| `tests/test_signing.py` | 8 — JWS signing + verification |
-| `tests/test_transcription.py` | 11 — provider Protocol + integration |
-| `tests/test_health_server.py` | 3 — /healthz + /metrics |
-
 ---
 
 ## 6. Complexity Hotspots
 
-Approach these with care; they hold the most state, the most quirks,
-or the most spec-compliance burden:
+### `siprec_srs/vcon_converter.py`
+Spec-compliance core: parties, dialogs, attachments, external publish
+branching, lib quirk stripping. Read the speckit before changing shape.
 
-### 🔥 `siprec_srs/vcon_converter.py` (~470 lines)
-Largest module by far. Holds:
-- All spec-compliance know-how (extensions, attachments, dialogs).
-- Branching for inline vs. external media mode.
-- Lib-quirk workarounds.
-- Per-stream → per-party mapping logic.
+### `siprec_srs/sip_server.py`
+SIP state machine, re-INVITE/UPDATE handling, Contact/SDP advertising
+(`SIPREC_PUBLIC_IP`), RTP port allocation in the firewall range.
 
-When changing it: read the speckit (`vcon-dev/vcon-speckit/CLAUDE.md`)
-first, and ensure the corresponding test in `test_vcon_converter.py`
-passes before AND after.
+### `siprec_srs/media_publisher.py`
+Filesystem atomic copy, S3 upload retries, URL derivation, content
+hash format. Failures must abort conversion.
 
-### 🔥 `siprec_srs/webhook_delivery.py` (~400 lines)
-Async + retry + signing + DLQ. The body must be serialized **once** so
-HMAC signatures are stable across retries. If you touch the
-serialization path, the round-trip test
-(`test_signed_delivery_round_trip`) is your safety net.
-
-### ⚠ `siprec_srs/sip_server.py` + `rtp_handler.py`
-These pull in `pjsua2`, which has a system-library dependency. Tests
-for these are integration-only and not run by default. Build/run a
-PJSIP-enabled venv before modifying.
-
-### ⚠ `main.py:_on_session_created`
-The `await asyncio.sleep(5)` placeholder for session-end detection is
-a known limitation. Real session-end signalling is a TODO. Don't
-copy-paste this pattern.
+### `siprec_srs/webhook_delivery.py`
+Serialize the body once so HMAC signatures stay stable across retries.
 
 ---
 
 ## 7. Ground Rules
 
-1. **Always read the speckit before changing emitted vCon shape** —
-   `/Users/thomashowe/Documents/GitHub/vcon-dev/vcon-speckit/CLAUDE.md`.
-2. **Tests must pass before AND after** any change. Use the venv
-   pattern in the README.
-3. **No new top-level fields without a draft URL** — add to the
-   appropriate extension or use `meta` / `tags`.
-4. **Phased PRs, not mega-merges** — see `feedback_phasing.md` history.
-   Each phase should compile and pass tests on its own.
-5. **Don't trust `vcon.is_valid()`** — it predates the extensions; we
-   enforce compliance via the test suite.
+1. **Read the speckit before changing emitted vCon shape** —
+   `~/Documents/GitHub/vcon-dev/vcon-speckit/CLAUDE.md`.
+2. **Tests must pass before and after** any change (`pytest -q`).
+3. **No new top-level fields without a draft URL** — use extensions,
+   attachments, or `meta`.
+4. **Phased PRs** — each change should compile and pass tests alone.
+5. **Don’t trust `vcon.is_valid()`** for extension attachments; enforce
+   compliance in tests.
 
 ---
 
 ## 8. Where to go next
 
-- Building an LLM analysis pass? Mirror `TranscriptionProvider` →
-  `AnalysisProvider`. Place output in `analysis[]` with proper
-  `vendor` / `product` / `schema`. See "Tier 1 LLM patterns" in the
-  team chat / README follow-up.
-- Adding a new spec extension? Pattern to follow:
-  1. Read the corresponding `draft-howe-vcon-*.md`.
-  2. Add a helper to `vcon_extensions.py` that emits the attachment
-     and calls `declare_extension(vcon_dict, "<name>")`.
-  3. Wire from `VConConverter.convert_session_to_vcon`.
-  4. Test in `test_vcon_extensions.py` (no lib) AND
-     `test_vcon_converter.py` (integration).
-- Reading order if you have one hour: `README.md` → `CHANGELOG.md` →
-  `vcon_extensions.py` → `vcon_converter.py::convert_session_to_vcon`
-  → `test_vcon_converter.py`.
+- Ops / partner bring-up: start at [`docs/README.md`](README.md).
+- New ASR backend: implement `TranscriptionProvider`.
+- New extension: helper in `vcon_extensions.py` + declare in
+  `extensions[]` + tests.
+- One-hour reading order: `README.md` → this guide →
+  `sip_server.py` (INVITE/BYE) → `vcon_converter.py` →
+  `media_publisher.py` → `tests/test_siprec_capture.py`.

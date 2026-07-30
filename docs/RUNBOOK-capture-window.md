@@ -92,7 +92,7 @@ pruning the dead ones while you are in there.
 Then confirm the service is up and the signaling path still works:
 
 ```bash
-ssh root@$DROPLET_IP 'docker ps --format "{{.Names}} {{.Status}}"; curl -s localhost:8080/health'
+ssh root@$DROPLET_IP 'docker ps --format "{{.Names}} {{.Status}}"; curl -s localhost:8080/healthz'
 ```
 
 If the container is not running, nothing else in this runbook will produce a

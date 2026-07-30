@@ -1,5 +1,13 @@
 # Work plan — SIPREC capture path rewrite
 
+> **COMPLETED 2026-07-20. Historical document; do not use as current
+> architecture.** The rewrite shipped: `pjsua2` was dropped for a
+> pure-Python asyncio SIP UAS (`sip_server.py`) plus `rtp_recorder.py`,
+> and `siprec_parser.py` parses the real multipart INVITE. Every
+> `pjsua2` reference below describes the *pre-rewrite* code. For current
+> architecture see `ONBOARDING.md`; for status history see
+> `RUNBOOK-digitalocean-testing.md`.
+
 The deploy target works (TLS 5061 listens, reachable, firewalled). The
 INVITE → media → vCon path does **not** and needs a rewrite, not a patch.
 This plan scopes that work. Discovered 2026-07-20 via a sipp shakeout on the
