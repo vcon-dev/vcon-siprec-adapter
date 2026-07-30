@@ -41,6 +41,50 @@ class TestConfigManager:
             
         finally:
             Path(config_file).unlink()
+
+    def test_loads_external_filesystem_media_config(self):
+        config_data = {
+            'media': {
+                'mode': 'external',
+                'publisher': 'filesystem',
+                'base_url': 'https://cdn.example.com/audio',
+                'key_pattern': '{recording_session_id}/{stream_id}.wav',
+                'filesystem': {'path': '/var/lib/siprec/recordings'},
+            }
+        }
+
+        config = self.config_manager._parse_config(config_data)
+
+        assert config.media.mode == 'external'
+        assert config.media.publisher == 'filesystem'
+        assert config.media.filesystem.path == '/var/lib/siprec/recordings'
+        assert config.media.key_pattern == (
+            '{recording_session_id}/{stream_id}.wav'
+        )
+
+    def test_external_none_requires_base_url(self):
+        config = Config()
+        config.media.mode = 'external'
+        config.media.publisher = 'none'
+        config.media.base_url = None
+
+        assert self.config_manager.validate_config(config) is False
+
+    def test_external_filesystem_requires_path(self):
+        config = Config()
+        config.media.mode = 'external'
+        config.media.publisher = 'filesystem'
+        config.media.filesystem.path = ''
+
+        assert self.config_manager.validate_config(config) is False
+
+    def test_external_s3_requires_bucket(self):
+        config = Config()
+        config.media.mode = 'external'
+        config.media.publisher = 's3'
+        config.media.s3.bucket = None
+
+        assert self.config_manager.validate_config(config) is False
     
     def test_validate_config(self):
         """Test configuration validation."""

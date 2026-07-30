@@ -9,7 +9,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from siprec_srs.config import MediaConfig
+from siprec_srs.config import FilesystemMediaConfig, MediaConfig
+from siprec_srs.media_publisher import PublishingError
 from siprec_srs.rtp_handler import RTPHandler
 from siprec_srs.vcon_converter import VConConverter
 
@@ -97,17 +98,54 @@ class TestExternalMediaDialog:
             # Encoding is irrelevant when there's no body.
             assert "encoding" not in rec or rec["encoding"] is None
 
-    def test_external_mode_without_base_url_skips_dialog(self):
+    def test_external_none_without_base_url_fails_at_startup(self):
         bad_cfg = MediaConfig(mode="external", base_url=None)
-        converter = VConConverter(media_config=bad_cfg)
-        with tempfile.TemporaryDirectory() as tmp:
-            wav = Path(tmp) / "stream_0.wav"
-            _make_wav(wav)
-            handler = _handler({"stream_0": str(wav)})
 
-            vcon = converter.convert_session_to_vcon(_session(), handler)
-            recordings = [d for d in vcon.dialog if d.get("type") == "recording"]
-            assert recordings == []
+        with pytest.raises(PublishingError):
+            VConConverter(media_config=bad_cfg)
+
+    def test_filesystem_mode_publishes_before_adding_dialog(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            wav = root / "stream_0.wav"
+            _make_wav(wav)
+            media_cfg = MediaConfig(
+                mode="external",
+                publisher="filesystem",
+                filesystem=FilesystemMediaConfig(
+                    path=str(root / "published")
+                ),
+            )
+            converter = VConConverter(media_config=media_cfg)
+
+            vcon = converter.convert_session_to_vcon(
+                _session(), _handler({"stream_0": str(wav)})
+            )
+
+            recording = next(
+                d for d in vcon.dialog if d.get("type") == "recording"
+            )
+            published = root / "published" / "r" / "stream_0.wav"
+            assert published.read_bytes() == wav.read_bytes()
+            assert recording["url"] == published.resolve().as_uri()
+            assert CONTENT_HASH_RE.match(recording["content_hash"])
+
+    def test_external_mode_aborts_when_any_stream_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            wav = root / "stream_0.wav"
+            _make_wav(wav)
+            converter = VConConverter(media_config=self.media_cfg)
+
+            vcon = converter.convert_session_to_vcon(
+                _session(),
+                _handler({
+                    "stream_0": str(wav),
+                    "stream_1": str(root / "missing.wav"),
+                }),
+            )
+
+            assert vcon is None
 
     def test_inline_mode_default_still_embeds_body(self):
         converter = VConConverter()  # default MediaConfig: inline

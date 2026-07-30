@@ -5,7 +5,9 @@ Integration tests for SIPREC SRS server.
 import pytest
 import asyncio
 import tempfile
+import wave
 from pathlib import Path
+from unittest.mock import MagicMock
 from siprec_srs.config import Config, ServerConfig, StorageConfig, WebhookConfig
 from siprec_srs.vcon_converter import VConConverter
 from siprec_srs.storage_handler import StorageHandler
@@ -56,8 +58,20 @@ class TestIntegration:
             'media_streams': []
         }
         
-        # Convert to vCon
-        vcon = self.converter.convert_session_to_vcon(session_data, None)
+        # Convert a real recording to vCon.
+        wav_path = Path(self.temp_dir) / "stream_0.wav"
+        with wave.open(str(wav_path), "wb") as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(8000)
+            wav_file.writeframes(b"\x00\x00" * 80)
+        rtp_handler = MagicMock()
+        rtp_handler.get_audio_files.return_value = {
+            "stream_0": str(wav_path)
+        }
+        vcon = self.converter.convert_session_to_vcon(
+            session_data, rtp_handler
+        )
         assert vcon is not None
         
         # Validate vCon

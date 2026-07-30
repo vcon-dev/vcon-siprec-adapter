@@ -15,6 +15,11 @@ from vcon.party import Party
 from vcon.dialog import Dialog
 from .rtp_handler import RTPHandler
 from .config import LawfulBasisConfig, MediaConfig
+from .media_publisher import (
+    AudioPublisher,
+    PublishingError,
+    create_audio_publisher,
+)
 from .transcription import (
     NoopTranscriptionProvider,
     TranscriptionProvider,
@@ -37,9 +42,16 @@ class VConConverter:
         lawful_basis_config: Optional[LawfulBasisConfig] = None,
         media_config: Optional[MediaConfig] = None,
         transcription_provider: Optional[TranscriptionProvider] = None,
+        audio_publisher: Optional[AudioPublisher] = None,
     ):
         self.lawful_basis_config = lawful_basis_config or LawfulBasisConfig()
         self.media_config = media_config or MediaConfig()
+        self.audio_publisher = audio_publisher
+        if (
+            self.media_config.mode == "external"
+            and self.audio_publisher is None
+        ):
+            self.audio_publisher = create_audio_publisher(self.media_config)
         self.transcription_provider: TranscriptionProvider = (
             transcription_provider or NoopTranscriptionProvider()
         )
@@ -150,6 +162,9 @@ class VConConverter:
     def _add_audio_dialogs(self, vcon: Vcon, session_data: Dict[str, Any],
                           rtp_handler: RTPHandler):
         """Add audio dialogs from captured RTP streams."""
+        if rtp_handler is None:
+            logger.warning("No RTP handler available for session")
+            return
         try:
             # Get audio files from RTP handler
             audio_files = rtp_handler.get_audio_files()
@@ -177,6 +192,10 @@ class VConConverter:
                 sorted(audio_files.items())
             ):
                 if not Path(audio_file_path).exists():
+                    if self.media_config.mode == "external":
+                        raise PublishingError(
+                            f"Audio file not found: {audio_file_path}"
+                        )
                     logger.warning(f"Audio file not found: {audio_file_path}")
                     continue
 
@@ -215,16 +234,14 @@ class VConConverter:
 
                 # Body vs URL+content_hash: see MediaConfig.
                 if self.media_config.mode == "external":
-                    url = self._external_media_url(audio_file_path)
-                    content_hash = self._sha512_content_hash(audio_file_path)
-                    if not url or not content_hash:
-                        logger.error(
-                            f"External media mode misconfigured for {audio_file_path}; "
-                            f"skipping dialog"
-                        )
-                        continue
-                    dialog_kwargs["url"] = url
-                    dialog_kwargs["content_hash"] = content_hash
+                    object_key = self._media_object_key(
+                        session_data, stream_id, audio_file_path
+                    )
+                    published = self.audio_publisher.publish(
+                        Path(audio_file_path), object_key
+                    )
+                    dialog_kwargs["url"] = published.url
+                    dialog_kwargs["content_hash"] = published.content_hash
                 else:
                     audio_data = self._read_audio_file(audio_file_path)
                     if not audio_data:
@@ -270,6 +287,7 @@ class VConConverter:
 
         except Exception as e:
             logger.error(f"Error adding audio dialogs: {e}")
+            raise
     
     def _add_session_metadata_attachment(self, vcon: Vcon, session_data: Dict[str, Any]):
         """Add SIPREC session metadata as a vCon attachment.
@@ -418,6 +436,31 @@ class VConConverter:
         if not base:
             return None
         return f"{base}/{Path(file_path).name}"
+
+    def _media_object_key(
+        self,
+        session_data: Dict[str, Any],
+        stream_id: str,
+        file_path: str,
+    ) -> str:
+        """Build a stable publisher key from configured session fields."""
+        if self.media_config.publisher == "none":
+            return Path(file_path).name
+
+        values = {
+            "recording_session_id": session_data.get(
+                "recording_session_id", ""
+            ),
+            "session_id": session_data.get("session_id", ""),
+            "call_id": session_data.get("call_id", ""),
+            "stream_id": stream_id,
+            "filename": Path(file_path).name,
+        }
+        safe_values = {
+            key: str(value).replace("/", "_").replace("\\", "_")
+            for key, value in values.items()
+        }
+        return self.media_config.key_pattern.format(**safe_values)
 
     def _sha512_content_hash(self, file_path: str) -> Optional[str]:
         """Return spec-form `sha512-<base64url(unpadded) of digest>`."""
