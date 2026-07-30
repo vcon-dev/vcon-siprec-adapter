@@ -18,6 +18,11 @@ and the operational runbooks.
 | [`RUNBOOK-capture-window.md`](RUNBOOK-capture-window.md) | Running a live RTP capture window with a partner: pre-flight checks, packet capture, and identifying the real media source IP before locking the firewall. |
 | [`RUNBOOK-complex-call-flows.md`](RUNBOOK-complex-call-flows.md) | Testing transfer, hold, and multi-leg flows, including NetSapiens rs-metadata 1.1 semantics and how transfer legs stitch together. |
 
+Partner-specific NetSapiens bring-up notes are deliberately not kept in this
+repository. They live outside it, in the VCONIC workspace under
+`~/Documents/GitHub/VCONIC/partner-netsapiens/` (for example
+`siprec-integration-david.md`).
+
 ## Historical
 
 | Doc | Status |

@@ -11,7 +11,10 @@ services:
       # Health + Prometheus metrics (health.port in config.yaml).
       - "8080:8080/tcp"
       # RTP media. Must cover rtp.port_range_start..rtp.port_range_end.
-      - "10000-10100:10000-10100/udp"
+      # Docker starts one userland proxy per published port, so a range this
+      # wide is slow to come up; the droplet deployment runs with host
+      # networking and opens 10000-20000/udp on the cloud firewall instead.
+      - "10000-20000:10000-20000/udp"
     volumes:
       - ./vcons:/app/vcons
       - ./logs:/app/logs

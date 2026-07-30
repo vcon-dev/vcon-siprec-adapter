@@ -58,7 +58,7 @@ them.** That is the whole reason this window exists. The ports must be opened
 | Droplet | `siprec-test`, ID `585884080`, **138.197.42.97**, nyc3 |
 | Cloud firewall ID | `c528a3b7-328e-44b1-a95e-ff782deca77d` |
 | SIP | `5061/tcp` TLS, `sip:srs@siprec.vconic.com` |
-| RTP range | `10000-20000/udp` (RTPConfig default; not overridden in `config.yaml`) |
+| RTP range | `10000-20000/udp` (`rtp.port_range_start`/`_end` in `config.yaml`, same as the RTPConfig default) |
 | David signaling IPs | `132.226.155.215`, `129.153.104.169` |
 | Expected media | plain RTP, G.711 PCMU/PCMA, two streams |
 
