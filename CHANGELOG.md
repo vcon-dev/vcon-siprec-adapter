@@ -6,6 +6,59 @@ project loosely follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+> Test counts inside dated entries below are point-in-time figures for
+> that entry. The suite currently collects **125 tests**.
+
+### 2026-07-30 — External audio publishing (filesystem + S3)
+
+- **`media.publisher`** added: `none` | `filesystem` | `s3`. In
+  `mode: external`, the adapter can now publish the captured WAV itself
+  instead of only labelling a URL.
+  - `filesystem` copies each recording atomically under
+    `media.filesystem.path`.
+  - `s3` uploads to `media.s3.bucket` using boto3's standard AWS
+    credential provider chain, with bounded retries for transient
+    network / throttling / 5xx errors.
+  - `none` preserves the previous operator-managed behavior and still
+    requires `media.base_url`.
+- **Deterministic object keys** via `media.key_pattern`
+  (default `{recording_session_id}/{stream_id}.wav`).
+- **URL derivation:** `media.base_url` overrides the publisher URL for
+  CDN / public front doors; otherwise filesystem emits `file://` and S3
+  emits its HTTPS object URL.
+- **Fail-closed publishing:** if any stream cannot be published, no vCon
+  is signed, stored, or delivered, and temporary WAVs are retained for
+  operator recovery. No silent fallback to inline audio.
+- **Startup validation** for media mode, publisher name, bucket / path,
+  retry settings, and `key_pattern`.
+- `boto3` added to `requirements.txt`.
+
+### 2026-07-29 — NetSapiens / Crexendo interop fixes
+
+- SDP answers echo `a=label` per RFC 7866 §5.2 (root cause of the
+  zero-RTP interop failure).
+- Streams correlate to participants via rs-metadata instead of
+  positional order, with positional mapping only as a fallback.
+- Re-INVITE / UPDATE re-offers are answered with SDP and updated
+  rs-metadata is absorbed rather than discarded.
+- RFC 7865 group / session keys are retained so transfer legs stitch
+  across multiple SIPREC sessions.
+- RTP recorders bind inside the configured firewall port range, and
+  `Contact` reflects the actual transport and port.
+
+### 2026-07-20 — Capture path rewritten as a pure-Python SIP UAS
+
+- Dropped `pjsua2` / PJSIP entirely. The SRS is now an asyncio SIP UAS
+  (`sip_server.py`) plus an RTP recorder (`rtp_recorder.py`, stdlib
+  `audioop` G.711 decode).
+- `siprec_parser.py` parses the real multipart INVITE
+  (`application/sdp` + `application/rs-metadata+xml`).
+- Session emission is BYE-driven via `_on_session_complete`, replacing
+  the placeholder fixed-duration sleep.
+- Docker image no longer builds pjproject from source.
+- Added end-to-end loopback capture test
+  (`tests/test_siprec_capture.py`).
+
 ### 2026-05-10 — Phase 5 (post-merge speckit re-audit)
 
 Re-audit against the 2026-05-07 speckit refresh (which verified spec

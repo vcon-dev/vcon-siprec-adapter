@@ -36,10 +36,10 @@ syntax `0.4.0`).
 
 ### Prerequisites
 
-- Python 3.8+
-- PJSIP / pjsua2 (only required for live SIPREC capture; tests can run
-  without it — see *Running Tests* below).
-- An RSA private key (PEM) — only if JWS signing is enabled.
+- Python 3.12+ recommended (3.8+ may work; Docker uses 3.12).
+- An RSA private key (PEM) only if JWS signing is enabled.
+- No PJSIP / `pjsua2` install. The SRS is a pure-Python asyncio SIP UAS
+  plus RTP recorder.
 
 ### Installation
 
@@ -47,19 +47,12 @@ syntax `0.4.0`).
 git clone https://github.com/vcon-dev/vcon-siprec-adapter
 cd vcon-siprec-adapter
 
-# System libraries for pjsua2 (Debian / Ubuntu)
-sudo apt-get install libpjproject-dev
-
-# Python dependencies
+python3.12 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 # Or, for development:
 pip install -e ".[dev]"
 ```
-
-> **Note on pjsua2:** the `pjsua2` Python wheel needs a working PJSIP
-> install on the host. If you only intend to run the test suite or
-> exercise the converter / signing / webhook code, you can skip pjsua2
-> entirely — none of those modules import it. See *Running Tests*.
 
 ### Configuration
 
@@ -71,6 +64,11 @@ cp .env.example .env
 # or
 cp config.yaml config.local.yaml
 ```
+
+Common env vars include listen/storage/webhook settings plus optional
+`SIPREC_PUBLIC_IP` (IP advertised in SDP/`Contact` when the host bind
+address is not the public address). S3 publishing uses the standard AWS
+credential provider chain; see *External audio publishing* below.
 
 ### Run the server
 
@@ -96,6 +94,8 @@ docker run -d \
   -v "$(pwd)/vcons:/app/vcons" \
   -v "$(pwd)/dlq:/app/dlq" \
   -v "$(pwd)/config.yaml:/app/config.yaml:ro" \
+  -v "$(pwd)/certs:/app/certs:ro" \
+  -e SIPREC_PUBLIC_IP=YOUR.PUBLIC.IP \
   siprec-srs
 ```
 
@@ -244,17 +244,18 @@ signing, it's wrapped in a JWS form (`payload` + `signatures`).
       "body": "{\"stream_id\":\"stream_0\",\"source\":\"rtp_capture\"}"
     },
     {
+      "purpose": "tags",
+      "party": 0, "dialog": 0,
+      "encoding": "json",
+      "body": "{\"source\":\"siprec\",\"call_id\":\"call-123@example.com\",\"recording_session_id\":\"session-456\"}"
+    },
+    {
       "type": "lawful_basis",
       "party": 0, "dialog": 0,
       "encoding": "json",
       "body": "{\"lawful_basis\":\"legitimate_interests\", ...}"
     }
-  ],
-  "tags": {
-    "call_id": "call-123@example.com",
-    "recording_session_id": "session-456",
-    "source": "siprec"
-  }
+  ]
 }
 ```
 
@@ -291,14 +292,18 @@ def verify(secret: str, body: bytes, header: str) -> bool:
 The `Idempotency-Key` header is set to the vCon UUID, so receivers can
 dedupe retries and DLQ replays safely.
 
-## Testing with SIPp
+## Testing SIPREC capture
+
+There is no checked-in SIPp scenario file. Prefer the repo’s loopback
+capture test, which drives INVITE → RTP → BYE → vCon without an external
+SIP stack:
 
 ```bash
-sudo apt-get install sipp
-sipp -sf test_siprec.xml your-server.com:5060
+.venv/bin/python -m pytest tests/test_siprec_capture.py -q
 ```
 
-See [`tests/`](tests/) for fixture-driven examples.
+For live-target debugging, see [`docs/`](docs/) (DigitalOcean runbook,
+capture-window runbook, and complex-call-flow notes).
 
 ## Health and metrics
 
@@ -325,25 +330,26 @@ See `config.yaml` for the complete reference.
 
 ### Running Tests
 
-The full test suite has **66 tests** that run without `pjsua2`:
+The suite currently collects **125 tests**. All of them run offline with
+the project venv (no PJSIP / `pjsua2`):
 
 ```bash
-# Quick path: a venv that doesn't need PJSIP system libraries.
 python3.12 -m venv .venv
-.venv/bin/pip install vcon pyyaml aiohttp aiofiles structlog pydub \
-    pytest pytest-asyncio pytest-aiohttp cryptography
-.venv/bin/python -m pytest tests/ --ignore=tests/test_integration.py
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python -m pytest -q
+```
+
+Focused capture / publisher checks:
+
+```bash
+.venv/bin/python -m pytest tests/test_siprec_capture.py tests/test_media_publisher.py -q
 ```
 
 Coverage:
 
 ```bash
-.venv/bin/python -m pytest --cov=siprec_srs tests/ --ignore=tests/test_integration.py
+.venv/bin/python -m pytest --cov=siprec_srs -q
 ```
-
-`tests/test_integration.py` is the only test that requires a running SIP
-stack; everything else (converter, extensions, signing, webhook delivery,
-external media, health server, transcription) runs offline.
 
 ### Code Formatting
 
@@ -361,5 +367,5 @@ MIT — see [`LICENSE`](LICENSE).
 
 Issues and pull requests are welcome at
 <https://github.com/vcon-dev/vcon-siprec-adapter>. Please run
-`pytest tests/ --ignore=tests/test_integration.py` and `black` before
-opening a PR.
+`pytest -q` and `black` before opening a PR. Start with
+[`docs/README.md`](docs/README.md) for the documentation map.

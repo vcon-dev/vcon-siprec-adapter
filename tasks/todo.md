@@ -9,14 +9,14 @@ formatting, filesystem settings, and S3 settings while retaining current
 defaults.
 
 **Acceptance criteria:**
-- [ ] Inline mode remains the default.
-- [ ] `publisher` accepts `none`, `filesystem`, or `s3`.
-- [ ] Existing external mode with `base_url` and no publisher remains valid.
-- [ ] Invalid external publisher configuration fails startup validation.
-- [ ] No credentials are stored in YAML.
+- [x] Inline mode remains the default.
+- [x] `publisher` accepts `none`, `filesystem`, or `s3`.
+- [x] Existing external mode with `base_url` and no publisher remains valid.
+- [x] Invalid external publisher configuration fails startup validation.
+- [x] No credentials are stored in YAML.
 
 **Verification:**
-- [ ] Focused configuration tests pass.
+- [x] Focused configuration tests pass.
 
 **Dependencies:** None
 
@@ -27,14 +27,14 @@ operator-managed media, and a filesystem publisher that durably copies WAV
 files and reports a spec-correct content hash.
 
 **Acceptance criteria:**
-- [ ] Filesystem publisher creates parent directories and preserves bytes.
-- [ ] Returned hash uses `sha512-` plus unpadded base64url.
-- [ ] Configured `base_url` overrides the derived `file://` URL.
-- [ ] Existing destination files are safely replaced.
-- [ ] Publishers never delete stored objects.
+- [x] Filesystem publisher creates parent directories and preserves bytes.
+- [x] Returned hash uses `sha512-` plus unpadded base64url.
+- [x] Configured `base_url` overrides the derived `file://` URL.
+- [x] Existing destination files are safely replaced.
+- [x] Publishers never delete stored objects.
 
 **Verification:**
-- [ ] Publisher unit tests pass.
+- [x] Publisher unit tests pass.
 
 **Dependencies:** Task 1
 
@@ -45,14 +45,14 @@ deterministic object keys, and add external dialogs only after publishing
 succeeds.
 
 **Acceptance criteria:**
-- [ ] External dialogs contain `url` and `content_hash`, not `body`.
-- [ ] Inline dialogs remain unchanged.
-- [ ] `publisher: none` retains current URL composition behavior.
-- [ ] A publish failure aborts conversion rather than dropping a dialog.
-- [ ] Multi-stream conversion does not return a partial vCon.
+- [x] External dialogs contain `url` and `content_hash`, not `body`.
+- [x] Inline dialogs remain unchanged.
+- [x] `publisher: none` retains current URL composition behavior.
+- [x] A publish failure aborts conversion rather than dropping a dialog.
+- [x] Multi-stream conversion does not return a partial vCon.
 
 **Verification:**
-- [ ] Focused external media and converter tests pass.
+- [x] Focused external media and converter tests pass.
 
 **Dependencies:** Tasks 1 and 2
 
@@ -62,13 +62,13 @@ succeeds.
 storage, and webhook processing complete successfully.
 
 **Acceptance criteria:**
-- [ ] Publish failure results in no saved or delivered vCon.
-- [ ] Temporary WAVs remain after any failed processing path.
-- [ ] Temporary WAVs are removed after the full success path when cleanup is
+- [x] Publish failure results in no saved or delivered vCon.
+- [x] Temporary WAVs remain after any failed processing path.
+- [x] Temporary WAVs are removed after the full success path when cleanup is
   enabled.
 
 **Verification:**
-- [ ] Application lifecycle tests pass.
+- [x] Application lifecycle tests pass.
 
 **Dependencies:** Task 3
 
@@ -79,15 +79,15 @@ bounded exponential backoff, optional endpoint override, and derived object
 URLs.
 
 **Acceptance criteria:**
-- [ ] Bucket and prefix produce the expected object key.
-- [ ] Upload sends the recorded bytes and WAV content type.
-- [ ] Transient failures retry up to the configured limit.
-- [ ] Final failure raises a publishing error.
-- [ ] `base_url` overrides the derived S3 URL.
-- [ ] The adapter never deletes S3 objects.
+- [x] Bucket and prefix produce the expected object key.
+- [x] Upload sends the recorded bytes and WAV content type.
+- [x] Transient failures retry up to the configured limit.
+- [x] Final failure raises a publishing error.
+- [x] `base_url` overrides the derived S3 URL.
+- [x] The adapter never deletes S3 objects.
 
 **Verification:**
-- [ ] Mocked S3 unit tests pass without AWS credentials.
+- [x] Mocked S3 unit tests pass without AWS credentials.
 
 **Dependencies:** Tasks 1 and 2
 
@@ -97,14 +97,14 @@ URLs.
 derivation, failure behavior, recovery, and external retention ownership.
 
 **Acceptance criteria:**
-- [ ] `config.yaml`, `.env.example`, and README agree.
-- [ ] Filesystem permissions and mount guidance are documented.
-- [ ] Minimal S3 IAM permissions are documented.
-- [ ] Bucket lifecycle policy is identified as the retention mechanism.
-- [ ] Failure recovery explains why temporary WAVs are retained.
+- [x] `config.yaml`, `.env.example`, and README agree.
+- [x] Filesystem permissions and mount guidance are documented.
+- [x] Minimal S3 IAM permissions are documented.
+- [x] Bucket lifecycle policy is identified as the retention mechanism.
+- [x] Failure recovery explains why temporary WAVs are retained.
 
 **Verification:**
-- [ ] Configuration examples match parser fields.
+- [x] Configuration examples match parser fields.
 
 **Dependencies:** Tasks 1 through 5
 
@@ -113,9 +113,9 @@ derivation, failure behavior, recovery, and external retention ownership.
 **Description:** Run focused and full regression checks.
 
 **Acceptance criteria:**
-- [ ] All focused tests pass.
-- [ ] Full pytest suite passes.
-- [ ] No inline media regression is present.
-- [ ] No secrets or unrelated files are included in the change.
+- [x] All focused tests pass.
+- [x] Full pytest suite passes.
+- [x] No inline media regression is present.
+- [x] No secrets or unrelated files are included in the change.
 
 **Dependencies:** Tasks 1 through 6
