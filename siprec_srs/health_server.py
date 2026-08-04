@@ -7,8 +7,10 @@ config, nothing is started.
 
 from __future__ import annotations
 
+import hmac
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from aiohttp import web
@@ -29,16 +31,25 @@ class HealthServer:
         host: str = "0.0.0.0",
         port: int = 8080,
         webhook_stats_provider: Optional[Callable[[], Dict[str, Any]]] = None,
+        vcon_dir: Optional[Path] = None,
+        auth_token: Optional[str] = None,
     ):
         self.host = host
         self.port = port
         self.webhook_stats_provider = webhook_stats_provider
+        # Read-only vCon retrieval API for QA/partners. Serves the vCons already
+        # written to disk. Disabled unless BOTH a directory and a token are set,
+        # so recordings are never exposed without auth.
+        self.vcon_dir = Path(vcon_dir) if vcon_dir else None
+        self.auth_token = auth_token
         self._runner: Optional[web.AppRunner] = None
 
     async def start(self) -> None:
         app = web.Application()
         app.router.add_get("/healthz", self._healthz)
         app.router.add_get("/metrics", self._metrics)
+        app.router.add_get("/vcons", self._list_vcons)
+        app.router.add_get("/vcons/{name}", self._get_vcon)
         self._runner = web.AppRunner(app)
         await self._runner.setup()
         site = web.TCPSite(self._runner, self.host, self.port)
@@ -84,3 +95,34 @@ class HealthServer:
         ]
         return web.Response(text="\n".join(lines) + "\n",
                             content_type="text/plain; version=0.0.4")
+
+    # ---- read-only vCon retrieval API ---------------------------------
+
+    def _gate(self, request: web.Request) -> Optional[web.Response]:
+        """Return an error Response if the request may not access vCons, else None."""
+        if self.vcon_dir is None or not self.auth_token:
+            return web.json_response({"error": "vcon API disabled"}, status=503)
+        got = request.headers.get("Authorization", "")
+        if not hmac.compare_digest(got, f"Bearer {self.auth_token}"):
+            return web.json_response({"error": "unauthorized"}, status=401)
+        return None
+
+    async def _list_vcons(self, request: web.Request) -> web.Response:
+        denied = self._gate(request)
+        if denied is not None:
+            return denied
+        names = sorted((p.name for p in self.vcon_dir.glob("*.json")), reverse=True)
+        return web.json_response({"count": len(names), "vcons": names})
+
+    async def _get_vcon(self, request: web.Request) -> web.Response:
+        denied = self._gate(request)
+        if denied is not None:
+            return denied
+        name = request.match_info["name"]
+        # Basename only: no path traversal, must be a .json in vcon_dir.
+        if "/" in name or "\\" in name or ".." in name or not name.endswith(".json"):
+            return web.json_response({"error": "not found"}, status=404)
+        path = self.vcon_dir / name
+        if not path.is_file():
+            return web.json_response({"error": "not found"}, status=404)
+        return web.FileResponse(path)
