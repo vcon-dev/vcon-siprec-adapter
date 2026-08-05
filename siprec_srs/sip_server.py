@@ -99,6 +99,11 @@ class SIPRECSession:
         self.start_time = _now()
         self.end_time: Optional[str] = None
         self.recorders: Dict[str, RTPRecorder] = {}
+        # Raw wire input/output, retained for the interop-debug attachment:
+        # what the SRC offered, what we answered, and the raw rs-metadata.
+        self.raw_offer_sdp = ""
+        self.raw_answer_sdp = ""
+        self.raw_rs_metadata = ""
 
     def get_audio_files(self) -> Dict[str, str]:
         """{stream_id: wav_path} for streams that captured >0 packets."""
@@ -257,6 +262,8 @@ class SIPRECServer:
         sdp, rs_text = self._split_body(msg)
         streams = self.parser.parse_sdp(sdp) if sdp else []
         session = SIPRECSession(call_id)
+        session.raw_offer_sdp = sdp or ""
+        session.raw_rs_metadata = rs_text or ""
         session.remote_uri = _uri(msg.get("From"))
         session.local_uri = _uri(msg.get("To"))
         session.recording_session_id = call_id  # SRC dialog id; refine if metadata carries one
@@ -268,6 +275,7 @@ class SIPRECServer:
         self.sessions[call_id] = session
 
         sdp_answer = self._build_sdp_answer(advertise_ip, answer_media)
+        session.raw_answer_sdp = sdp_answer
         resp = self._response(msg, 200, "OK", body=sdp_answer.encode(),
                               content_type="application/sdp",
                               add_contact_ip=advertise_ip)

@@ -184,6 +184,9 @@ class SIPRECSRSApp:
                 'media_streams': session.media_streams,
                 'remote_uri': session.remote_uri,
                 'local_uri': session.local_uri,
+                'raw_offer_sdp': getattr(session, 'raw_offer_sdp', ''),
+                'raw_answer_sdp': getattr(session, 'raw_answer_sdp', ''),
+                'raw_rs_metadata': getattr(session, 'raw_rs_metadata', ''),
             }
             
             # Convert to vCon (session exposes get_audio_files()).

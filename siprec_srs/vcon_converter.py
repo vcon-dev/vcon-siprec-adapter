@@ -333,6 +333,22 @@ class VConConverter:
                 "body": json.dumps(session_info),
             })
 
+            # Raw wire input/output attached verbatim: the SDP offer we received,
+            # the SDP answer we emitted, and the raw rs-metadata. Lets any vCon
+            # viewer show wire-in next to vCon-out (the a=label class of interop
+            # bug is diagnosable from one object). Omitted when nothing captured.
+            wire = {
+                "offer_sdp": session_data.get("raw_offer_sdp", ""),
+                "answer_sdp": session_data.get("raw_answer_sdp", ""),
+                "rs_metadata": session_data.get("raw_rs_metadata", ""),
+            }
+            if any(wire.values()):
+                vcon.vcon_dict.setdefault("attachments", []).append({
+                    "purpose": "siprec_wire",
+                    "encoding": "json",
+                    "body": json.dumps(wire),
+                })
+
         except Exception as e:
             logger.error(f"Error adding session metadata attachment: {e}")
     
