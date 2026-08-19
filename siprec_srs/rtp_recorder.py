@@ -65,6 +65,10 @@ class RTPRecorder:
         self.packet_count = 0
         self.bytes_received = 0
         self._decoded_payload_type: Optional[int] = None
+        # Per-SSRC packet counts. More than one entry means two sources sent to
+        # this port, which the WAV cannot represent: they interleave and the
+        # audio sounds chopped. See _note_ssrc.
+        self.ssrc_counts: Dict[int, int] = {}
         self._transport: Optional[asyncio.BaseTransport] = None
         self._wave: Optional[wave.Wave_write] = None
 
@@ -124,6 +128,7 @@ class RTPRecorder:
         csrc_count = b0 & 0x0F
         has_ext = (b0 >> 4) & 0x1
         payload_type = b1 & 0x7F
+        self._note_ssrc(struct.unpack(">I", data[8:12])[0])
         header_len = 12 + csrc_count * 4
         if has_ext:
             if len(data) < header_len + 4:
@@ -160,6 +165,26 @@ class RTPRecorder:
             self._decoded_payload_type = payload_type
         return None
 
+    def _note_ssrc(self, ssrc: int):
+        """Count packets per synchronization source and warn on a second one.
+
+        One recorder is one WAV is one audio timeline, so it can only represent
+        one source. A second SSRC on the same port means the SRC put two legs
+        on one `m=` line (or sent an extra stream to a port we advertised for
+        another): both get written, interleaved, and the result plays back
+        chopped at roughly double rate. Warn once per new SSRC and keep the
+        counts so `stats()` can prove it after the fact.
+        """
+        if ssrc not in self.ssrc_counts:
+            if self.ssrc_counts:
+                logger.warning(
+                    "stream %s: second SSRC 0x%08x on udp/%d (already had %s); "
+                    "both sources are being written to one WAV and will interleave",
+                    self.stream_id, ssrc, self.local_port,
+                    ", ".join(f"0x{s:08x}" for s in self.ssrc_counts))
+            self.ssrc_counts[ssrc] = 0
+        self.ssrc_counts[ssrc] += 1
+
     def _note_codec(self, payload_type: int, name: str):
         if self._decoded_payload_type != payload_type:
             self._decoded_payload_type = payload_type
@@ -173,8 +198,15 @@ class RTPRecorder:
         if self._wave is not None:
             self._wave.close()
             self._wave = None
-        logger.info("RTP recorder %s stopped: %d packets, %d payload bytes, codec=%s",
-                    self.stream_id, self.packet_count, self.bytes_received, self.codec)
+        logger.info("RTP recorder %s stopped: %d packets, %d payload bytes, codec=%s, ssrcs=%s",
+                    self.stream_id, self.packet_count, self.bytes_received,
+                    self.codec, self.ssrc_summary())
+
+    def ssrc_summary(self) -> str:
+        """Human-readable per-SSRC packet counts, for logs."""
+        if not self.ssrc_counts:
+            return "none"
+        return " ".join(f"0x{s:08x}={n}" for s, n in self.ssrc_counts.items())
 
     def stats(self) -> Dict[str, object]:
         return {
@@ -183,4 +215,6 @@ class RTPRecorder:
             "bytes_received": self.bytes_received,
             "codec": self.codec,
             "local_port": self.local_port,
+            "ssrc_counts": {f"0x{s:08x}": n for s, n in self.ssrc_counts.items()},
+            "mixed_ssrc": len(self.ssrc_counts) > 1,
         }
