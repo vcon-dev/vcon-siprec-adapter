@@ -158,6 +158,9 @@ async def test_siprec_invite_rtp_bye_produces_vcon(tmp_path):
         "media_streams": session.media_streams,
         "remote_uri": session.remote_uri,
         "local_uri": session.local_uri,
+        "raw_offer_sdp": session.raw_offer_sdp,
+        "raw_answer_sdp": session.raw_answer_sdp,
+        "raw_rs_metadata": session.raw_rs_metadata,
     }, session)
 
     assert vcon is not None
@@ -170,6 +173,10 @@ async def test_siprec_invite_rtp_bye_produces_vcon(tmp_path):
     recordings = [dlg for dlg in d["dialog"] if dlg.get("type") == "recording"]
     assert len(recordings) == 2
     assert all(dlg.get("body") for dlg in recordings)  # inline base64url audio
+
+    # raw wire input/output attached for interop debugging (offer+answer SDP)
+    wire = [a for a in d.get("attachments", []) if a.get("purpose") == "siprec_wire"]
+    assert len(wire) == 1 and "m=audio" in wire[0]["body"]
 
 
 def test_contact_reflects_transport_and_port():

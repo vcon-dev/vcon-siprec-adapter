@@ -8,6 +8,7 @@ SIP conversations into vCon format.
 
 import asyncio
 import logging
+import os
 import signal
 import sys
 import argparse
@@ -58,6 +59,8 @@ class SIPRECSRSApp:
                 host=config.health.host,
                 port=config.health.port,
                 webhook_stats_provider=self.webhook_delivery.get_stats,
+                vcon_dir=self.storage_handler.storage_path,
+                auth_token=os.getenv("SIPREC_VCON_API_TOKEN"),
             )
             if config.health.enabled
             else None
@@ -184,6 +187,9 @@ class SIPRECSRSApp:
                 'media_streams': session.media_streams,
                 'remote_uri': session.remote_uri,
                 'local_uri': session.local_uri,
+                'raw_offer_sdp': getattr(session, 'raw_offer_sdp', ''),
+                'raw_answer_sdp': getattr(session, 'raw_answer_sdp', ''),
+                'raw_rs_metadata': getattr(session, 'raw_rs_metadata', ''),
             }
             
             # Convert to vCon (session exposes get_audio_files()).
