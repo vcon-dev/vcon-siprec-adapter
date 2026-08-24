@@ -28,6 +28,11 @@ logger = logging.getLogger(__name__)
 PT_PCMU = 0
 PT_PCMA = 8
 
+# Sequence numbers remembered per SSRC for duplicate detection. Two seconds of
+# 20ms audio: long enough that a duplicate is not missed, short enough that a
+# legitimate 16-bit wrap-around never collides.
+_SEQ_WINDOW = 100
+
 
 class _RTPProtocol(asyncio.DatagramProtocol):
     """asyncio datagram protocol that feeds packets to an RTPRecorder."""
@@ -69,6 +74,14 @@ class RTPRecorder:
         # this port, which the WAV cannot represent: they interleave and the
         # audio sounds chopped. See _note_ssrc.
         self.ssrc_counts: Dict[int, int] = {}
+        # Duplicate detection. The 2026-08-20 four-party barge delivered every
+        # label-3 packet twice under ONE SSRC, so ssrc_counts saw a single
+        # source and stayed quiet while the WAV came out at double length. Keep
+        # a short window of recently seen sequence numbers per SSRC: a repeat is
+        # the same packet arriving again, and writing it again stretches the
+        # timeline. See _note_seq.
+        self.duplicate_counts: Dict[int, int] = {}
+        self._recent_seqs: Dict[int, Dict[int, None]] = {}
         self._transport: Optional[asyncio.BaseTransport] = None
         self._wave: Optional[wave.Wave_write] = None
 
@@ -128,7 +141,11 @@ class RTPRecorder:
         csrc_count = b0 & 0x0F
         has_ext = (b0 >> 4) & 0x1
         payload_type = b1 & 0x7F
-        self._note_ssrc(struct.unpack(">I", data[8:12])[0])
+        seq = struct.unpack(">H", data[2:4])[0]
+        ssrc = struct.unpack(">I", data[8:12])[0]
+        self._note_ssrc(ssrc)
+        if self._note_seq(ssrc, seq):
+            return  # exact duplicate; writing it again would stretch the WAV
         header_len = 12 + csrc_count * 4
         if has_ext:
             if len(data) < header_len + 4:
@@ -185,6 +202,29 @@ class RTPRecorder:
             self.ssrc_counts[ssrc] = 0
         self.ssrc_counts[ssrc] += 1
 
+    def _note_seq(self, ssrc: int, seq: int) -> bool:
+        """Return True if this (ssrc, seq) was already seen recently.
+
+        A sequence number repeating inside the window means the same packet
+        reached us twice, whether the SRC sent it twice or something between us
+        forked the media. Either way its audio is already in the WAV, so the
+        copy is dropped and counted. The window is short and per-SSRC so normal
+        reordering does not read as duplication and a 16-bit wrap is harmless.
+        """
+        seen = self._recent_seqs.setdefault(ssrc, {})
+        if seq in seen:
+            if ssrc not in self.duplicate_counts:
+                logger.warning(
+                    "stream %s: duplicate RTP seq %d from 0x%08x on udp/%d; "
+                    "dropping the copy (the sender is delivering this leg twice)",
+                    self.stream_id, seq, ssrc, self.local_port)
+            self.duplicate_counts[ssrc] = self.duplicate_counts.get(ssrc, 0) + 1
+            return True
+        seen[seq] = None
+        if len(seen) > _SEQ_WINDOW:
+            seen.pop(next(iter(seen)))
+        return False
+
     def _note_codec(self, payload_type: int, name: str):
         if self._decoded_payload_type != payload_type:
             self._decoded_payload_type = payload_type
@@ -198,9 +238,10 @@ class RTPRecorder:
         if self._wave is not None:
             self._wave.close()
             self._wave = None
-        logger.info("RTP recorder %s stopped: %d packets, %d payload bytes, codec=%s, ssrcs=%s",
+        logger.info("RTP recorder %s stopped: %d packets, %d payload bytes, codec=%s, "
+                    "ssrcs=%s, duplicates_dropped=%d",
                     self.stream_id, self.packet_count, self.bytes_received,
-                    self.codec, self.ssrc_summary())
+                    self.codec, self.ssrc_summary(), self.duplicate_count)
 
     def ssrc_summary(self) -> str:
         """Human-readable per-SSRC packet counts, for logs."""
@@ -217,4 +258,12 @@ class RTPRecorder:
             "local_port": self.local_port,
             "ssrc_counts": {f"0x{s:08x}": n for s, n in self.ssrc_counts.items()},
             "mixed_ssrc": len(self.ssrc_counts) > 1,
+            "duplicate_counts": {f"0x{s:08x}": n
+                                 for s, n in self.duplicate_counts.items()},
+            "duplicates_dropped": self.duplicate_count,
         }
+
+    @property
+    def duplicate_count(self) -> int:
+        """Packets dropped as exact re-deliveries, across all sources."""
+        return sum(self.duplicate_counts.values())

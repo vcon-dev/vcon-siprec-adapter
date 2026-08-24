@@ -80,3 +80,51 @@ def test_short_and_non_rtp_packets_do_not_register_an_ssrc():
     rec.handle_packet(b"\x00" * 172)            # RTP version 0
     assert rec.ssrc_counts == {}
     assert rec.ssrc_summary() == "none"
+
+
+def test_duplicate_seq_is_dropped_and_counted():
+    """The 2026-08-20 barge: one SSRC, every packet delivered twice.
+
+    ssrc_counts alone reported a single source and stayed quiet while stream_2's
+    WAV came out at exactly double length (237.6s for a 118.7s call).
+    """
+    rec = _recorder()
+    written = []
+    rec._wave = types.SimpleNamespace(writeframes=written.append)
+    for seq in range(50):
+        rec.handle_packet(_pcmu_packet(0x64C5E7A5, seq))
+        rec.handle_packet(_pcmu_packet(0x64C5E7A5, seq))  # same packet again
+    assert rec.packet_count == 50           # not 100
+    assert len(written) == 50               # the WAV is real time, not 2x
+    assert rec.duplicate_count == 50
+    assert rec.stats()["duplicate_counts"] == {"0x64c5e7a5": 50}
+    assert rec.stats()["mixed_ssrc"] is False   # one source, still a problem
+
+
+def test_reordering_is_not_duplication():
+    """Out-of-order delivery must not be mistaken for a duplicate."""
+    rec = _recorder()
+    for seq in (0, 1, 3, 2, 4):
+        rec.handle_packet(_pcmu_packet(0xAAAAAAAA, seq))
+    assert rec.packet_count == 5
+    assert rec.duplicate_count == 0
+
+
+def test_seq_window_forgets_old_numbers():
+    """A 16-bit wrap must not collide with a number seen thousands ago."""
+    rec = _recorder()
+    rec.handle_packet(_pcmu_packet(0xAAAAAAAA, 7))
+    for seq in range(100, 100 + rr._SEQ_WINDOW + 5):
+        rec.handle_packet(_pcmu_packet(0xAAAAAAAA, seq))
+    rec.handle_packet(_pcmu_packet(0xAAAAAAAA, 7))   # wrapped round, not a dup
+    assert rec.duplicate_count == 0
+
+
+def test_duplicates_are_tracked_per_source():
+    """Two SSRCs sharing a port each get their own sequence space."""
+    rec = _recorder()
+    rec.handle_packet(_pcmu_packet(0xAAAAAAAA, 5))
+    rec.handle_packet(_pcmu_packet(0xBBBBBBBB, 5))   # same seq, other source
+    assert rec.duplicate_count == 0
+    rec.handle_packet(_pcmu_packet(0xBBBBBBBB, 5))   # now a real duplicate
+    assert rec.stats()["duplicate_counts"] == {"0xbbbbbbbb": 1}
