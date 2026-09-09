@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from vcon import Vcon
 from vcon.party import Party
+from .siprec_parser import enrich_participants_from_vendor
 from vcon.dialog import Dialog
 from .rtp_handler import RTPHandler
 from .config import LawfulBasisConfig, MediaConfig
@@ -86,7 +87,10 @@ class VConConverter:
                 "conversion_timestamp": datetime.now(timezone.utc).isoformat(),
             })
 
-            self._add_participants(vcon, session_data.get('participants', []))
+            participants = enrich_participants_from_vendor(
+                session_data.get('participants', []) or [], vendor,
+            )
+            self._add_participants(vcon, participants)
             self._add_audio_dialogs(vcon, session_data, rtp_handler)
             self._add_session_metadata_attachment(vcon, session_data)
             self._add_sip_signaling(vcon, session_data)
@@ -108,10 +112,12 @@ class VConConverter:
     def _add_participants(self, vcon: Vcon, participants: List[Dict[str, Any]]):
         """Add participants to the vCon.
 
-        Only spec-defined Party fields (name, tel, mailto) are passed to the
-        Party constructor. Non-spec hints (role, domain, uri, internal id)
-        go into `party.meta` so they survive serialization without polluting
-        spec-typed fields.
+        Core Party fields (draft-02: name, tel, mailto, sip, did, uuid) are
+        passed to the constructor. The SIP AOR is a core `sip` field, not a
+        `meta` hint (David Wang, 2026-09-06); the NetSapiens subscriber id is a
+        core `did`, and its derived stable id a core `uuid`. Only the genuinely
+        non-spec hints (role, domain, internal id) remain in `party.meta`, which
+        is an extension-only field.
         """
         try:
             for participant in participants:
@@ -119,10 +125,13 @@ class VConConverter:
                     name=participant.get('name', '') or None,
                     tel=participant.get('tel', '') or None,
                     mailto=participant.get('mailto', '') or None,
+                    sip=participant.get('uri', '') or None,
+                    did=participant.get('did', '') or None,
+                    uuid=participant.get('uuid', '') or None,
                 )
 
                 meta = {}
-                for key in ('role', 'domain', 'uri', 'id'):
+                for key in ('role', 'domain', 'id'):
                     if participant.get(key):
                         meta[key] = participant[key]
                 if meta:

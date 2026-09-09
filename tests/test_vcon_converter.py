@@ -104,16 +104,35 @@ class TestSpecCompliance:
         assert "sip-signaling" in extensions
         assert "lawful_basis" in extensions
 
-    def test_parties_drop_non_spec_kwargs(self):
-        """Party objects must not carry `role`/`uuid` as top-level fields."""
+    def test_role_stays_in_meta_extension(self):
+        """`role` is an EXTENSION-only Party field (speckit Party Object), so it
+        must not appear at the top level; it lives in `meta`."""
         vcon = self.converter.convert_session_to_vcon(
             _session_data(), _empty_rtp_handler()
         )
         for party_dict in vcon.vcon_dict.get("parties", []):
-            # Spec-typed fields only at top level.
             assert "role" not in party_dict
-            # `uuid` is not a Party field in core; was being passed in.
-            assert "uuid" not in party_dict
+            assert party_dict.get("meta", {}).get("role") in ("caller", "callee")
+
+    def test_core_sip_did_uuid_map_from_netsapiens_fields(self):
+        """AOR -> core `sip`, NetSapiens uid -> core `did` + derived core
+        `uuid` (David Wang, 2026-09-06). These are core Party fields, not meta."""
+        participants = [{
+            'id': 'p1', 'name': 'Boba Fett',
+            'uri': 'sip:1002@vbox.netsapiens.com',
+            'did': '1002@vbox.netsapiens.com',
+            'uuid': '00000000-0000-5000-8000-000000000abc',
+            'tel': '+18587641002',
+        }]
+        vcon = self.converter.convert_session_to_vcon(
+            _session_data(participants=participants), _empty_rtp_handler()
+        )
+        party = vcon.vcon_dict["parties"][0]
+        assert party["sip"] == "sip:1002@vbox.netsapiens.com"
+        assert party["did"] == "1002@vbox.netsapiens.com"
+        assert party["uuid"] == "00000000-0000-5000-8000-000000000abc"
+        assert party["tel"] == "+18587641002"
+        assert "uri" not in party  # AOR is `sip` now, not a meta hint
 
 
 class TestTagsAttachment:

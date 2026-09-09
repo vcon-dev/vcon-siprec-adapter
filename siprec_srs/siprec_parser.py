@@ -9,10 +9,18 @@ reach the body at all.
 
 import logging
 import re
+import uuid as _uuid
 import xml.etree.ElementTree as ET
 from typing import Dict, Any, List, Optional
 
 logger = logging.getLogger(__name__)
+
+# Fixed namespace for deriving a stable Party `uuid` from a provider's own
+# subscriber id (NetSapiens `uid`). Any constant UUID works as a uuid5
+# namespace; this one is arbitrary and permanent, so the same uid always maps
+# to the same UUID across calls and across vCons -- which is the whole point of
+# the core Party `uuid` field (cross-vCon identity).
+_PARTY_UUID_NS = _uuid.UUID("a7c9e5d2-1b3f-4e6a-8c0d-9f2e4b6a8c1d")
 
 # RTP static payload type -> codec name (RFC 3551), for labelling.
 _STATIC_PT = {0: "PCMU", 8: "PCMA", 9: "G722"}
@@ -76,6 +84,93 @@ def _is_phone_number(s: str) -> bool:
     if not re.fullmatch(r"\+?[\d\-().\s]+", s):
         return False
     return s.startswith("+") or len(digits) >= 7
+
+
+def _to_e164(number: str) -> str:
+    """Best-effort E.164 for a NANP number; pass anything else through.
+
+    `8587641002` -> `+18587641002`, `18587641002` -> `+18587641002`, an
+    already-`+` number is left alone. A value that is neither a clean 10/11-digit
+    NANP number nor `+`-prefixed is returned unchanged rather than guessed at.
+    """
+    if not number:
+        return ""
+    s = number.strip()
+    if s.startswith("+"):
+        return s
+    digits = re.sub(r"[^\d]", "", s)
+    if len(digits) == 10:
+        return "+1" + digits
+    if len(digits) == 11 and digits.startswith("1"):
+        return "+" + digits
+    return s
+
+
+def enrich_participants_from_vendor(
+    participants: List[Dict[str, Any]], vendor: Dict[str, Any]
+) -> List[Dict[str, Any]]:
+    """Fold NetSapiens per-party extension fields onto the RFC 7865 parties.
+
+    Closes the gap David Wang raised (2026-09-06): the standard `<participant>`
+    block carries only name + AOR, so the real dialable number, the cross-domain
+    subscriber id, and a formal home for the AOR never reach the Party object.
+    NetSapiens 1.1 adds `calledParty` / `callingParty` elements keyed by the same
+    `participant_id`, carrying:
+
+      * `number`     -> `tel`, normalised to E.164 (only if no tel yet)
+      * nameID `uid` -> `did` and a derived, stable core `uuid`
+      * nameID `aor` -> `uri` (mapped to the core `sip` field downstream)
+
+    1.0 payloads carry flat `calledPartyNumber` with no participant_id
+    association, so nothing is folded and tel stays empty rather than being
+    attributed to the wrong party. Mutates and returns the participant list.
+    """
+    index: Dict[str, Dict[str, str]] = {}
+    _collect_vendor_parties(vendor, index)
+    for p in participants:
+        v = index.get(p.get("id"))
+        if not v:
+            continue
+        if v.get("number") and not p.get("tel"):
+            p["tel"] = _to_e164(v["number"])
+        if v.get("uid"):
+            p["did"] = v["uid"]
+            p.setdefault("uuid", str(_uuid.uuid5(_PARTY_UUID_NS, v["uid"])))
+        if v.get("aor") and not p.get("uri"):
+            p["uri"] = v["aor"]
+    return participants
+
+
+def _collect_vendor_parties(node: Any, out: Dict[str, Dict[str, str]]) -> None:
+    """Index every vendor node carrying a `participant_id` by that id.
+
+    Schema-agnostic on purpose, matching parse_vendor_extension: NetSapiens can
+    nest `calledParty` / `callingParty` wherever it likes across 1.0/1.1, so the
+    shape (a dict with a participant_id) is matched, not a fixed path. Collects
+    `number` and the nameID's `uid` / `aor`.
+    """
+    if isinstance(node, list):
+        for item in node:
+            _collect_vendor_parties(item, out)
+        return
+    if not isinstance(node, dict):
+        return
+    pid = node.get("participant_id")
+    if pid:
+        name_id = node.get("nameID")
+        if isinstance(name_id, list):
+            name_id = name_id[0] if name_id else {}
+        if not isinstance(name_id, dict):
+            name_id = {}
+        entry = out.setdefault(pid, {})
+        for key, raw in (("number", node.get("number")),
+                         ("uid", name_id.get("uid")),
+                         ("aor", name_id.get("aor"))):
+            val = raw.get("_text", "") if isinstance(raw, dict) else raw
+            if val and not entry.get(key):
+                entry[key] = val
+    for child in node.values():
+        _collect_vendor_parties(child, out)
 
 
 class SIPRECParser:
