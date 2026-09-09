@@ -12,8 +12,20 @@ that we do not have to: nothing here enumerates a 1.0 field list.
 """
 
 import unittest
+import uuid as _uuid
 
-from siprec_srs.siprec_parser import SIPRECParser
+from siprec_srs.siprec_parser import (
+    SIPRECParser,
+    enrich_participants_from_vendor,
+    _to_e164,
+    _PARTY_UUID_NS,
+)
+
+# NetSapiens 1.1, reconstructed from David Wang's 2026-09-06 email. 1.1 adds
+# per-party `calledParty` / `callingParty` blocks keyed by the same
+# participant_id as the standard `<participant>`, carrying the real dialable
+# `number`, a cross-domain `uid`, and the device `aor`.
+CALL_11 = """<?xml version="1.0" encoding="UTF-8"?><recording xmlns="urn:ietf:params:xml:ns:recording:1"><datamode>complete</datamode><participant participant_id="PID1"><nameID aor="sip:1001@vbox.netsapiens.com"><name>Din Djarin</name></nameID></participant><participant participant_id="20260825223001002433-0018491486ec5db64acd5aca455acfe8"><nameID aor="sip:1002@vbox.netsapiens.com"><name>Boba Fett</name></nameID></participant><netsapiensExtension xmlns="http://schema.netsapiens.com/netsapiensSipRec" version="1.1"><groupSeq>0</groupSeq><callingParty participant_id="PID1"><nameID aor="sip:1001@vbox.netsapiens.com"><uid>1001@vbox.netsapiens.com</uid><name>Din Djarin</name></nameID><number>8587641001</number></callingParty><calledParty participant_id="20260825223001002433-0018491486ec5db64acd5aca455acfe8"><nameID aor="sip:1002@vbox.netsapiens.com"><uid>1002@vbox.netsapiens.com</uid><name>Boba Fett</name></nameID><number>8587641002</number></calledParty><byAction>Recording</byAction></netsapiensExtension></recording>"""
 
 # Two-party call, 07-20. Note `sip:1001w@...` — the stray "w" is in the
 # original and is exactly the shape that used to be mistaken for an email.
@@ -127,6 +139,70 @@ class TestVendorExtension(unittest.TestCase):
 
     def test_malformed_xml_is_empty_not_an_error(self):
         self.assertEqual(self.parser.parse_vendor_extension("<not xml"), {})
+
+
+class TestParticipantEnrichment(unittest.TestCase):
+    """NetSapiens 1.1 per-party fields fold onto the RFC 7865 participants.
+
+    Answers David Wang's 2026-09-06 questions in code: real number -> tel,
+    uid -> did + stable uuid, aor kept for the core sip field.
+    """
+
+    def setUp(self):
+        self.parser = SIPRECParser()
+
+    def _enriched(self, xml):
+        parts = self.parser.parse_rs_metadata(xml)
+        vendor = self.parser.parse_vendor_extension(xml)
+        return enrich_participants_from_vendor(parts, vendor)
+
+    def test_real_number_becomes_e164_tel(self):
+        boba = next(p for p in self._enriched(CALL_11) if p["name"] == "Boba Fett")
+        self.assertEqual(boba["tel"], "+18587641002")
+
+    def test_uid_becomes_did_and_stable_uuid(self):
+        boba = next(p for p in self._enriched(CALL_11) if p["name"] == "Boba Fett")
+        self.assertEqual(boba["did"], "1002@vbox.netsapiens.com")
+        # Deterministic: same uid always yields the same core Party uuid.
+        self.assertEqual(
+            boba["uuid"],
+            str(_uuid.uuid5(_PARTY_UUID_NS, "1002@vbox.netsapiens.com")),
+        )
+        again = next(p for p in self._enriched(CALL_11) if p["name"] == "Boba Fett")
+        self.assertEqual(boba["uuid"], again["uuid"])
+
+    def test_aor_preserved_for_sip_field(self):
+        boba = next(p for p in self._enriched(CALL_11) if p["name"] == "Boba Fett")
+        self.assertEqual(boba["uri"], "sip:1002@vbox.netsapiens.com")
+
+    def test_join_is_by_participant_id_not_order(self):
+        din = next(p for p in self._enriched(CALL_11) if p["name"] == "Din Djarin")
+        self.assertEqual(din["tel"], "+18587641001")
+        self.assertEqual(din["did"], "1001@vbox.netsapiens.com")
+
+    def test_10_payload_leaves_tel_empty_not_guessed(self):
+        # 1.0 has flat calledPartyNumber with no participant_id association, so
+        # nothing is folded: undialable PBX extensions stay tel-less.
+        parts = self.parser.parse_rs_metadata(CALL_0720)
+        vendor = self.parser.parse_vendor_extension(CALL_0720)
+        for p in enrich_participants_from_vendor(parts, vendor):
+            self.assertEqual(p["tel"], "", f"1.0 fabricated a tel: {p}")
+
+    def test_absent_vendor_is_a_noop(self):
+        parts = self.parser.parse_rs_metadata(CALL_11)
+        before = [dict(p) for p in parts]
+        self.assertEqual(enrich_participants_from_vendor(parts, {}), before)
+
+
+class TestE164(unittest.TestCase):
+    def test_nanp_forms(self):
+        self.assertEqual(_to_e164("8587641002"), "+18587641002")
+        self.assertEqual(_to_e164("18587641002"), "+18587641002")
+        self.assertEqual(_to_e164("+18587641002"), "+18587641002")
+
+    def test_non_nanp_passes_through(self):
+        self.assertEqual(_to_e164("1002"), "1002")   # PBX extension, untouched
+        self.assertEqual(_to_e164(""), "")
 
 
 if __name__ == "__main__":
