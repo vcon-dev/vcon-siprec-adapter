@@ -122,8 +122,11 @@ sink" we promised David) and paste it above.
 ## 6. Run (host networking so RTP ports aren't mapped)
 
 ```bash
+# Token for the read-only vCon API (GET /vcons). Unset = 503 "vcon API disabled".
+umask 077; echo "SIPREC_VCON_API_TOKEN=$(openssl rand -hex 24)" > .env
+
 docker run -d --name siprec-srs --restart unless-stopped \
-  --network host \
+  --network host --env-file .env \
   -v "$(pwd)/config.yaml:/app/config.yaml:ro" \
   -v "$(pwd)/certs:/app/certs:ro" \
   -v "$(pwd)/vcons:/app/vcons" \

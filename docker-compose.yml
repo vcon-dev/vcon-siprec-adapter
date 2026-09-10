@@ -27,6 +27,8 @@ services:
       - SIPREC_LOG_LEVEL=INFO
       # Set when the container's bind address is not the address peers reach.
       # - SIPREC_PUBLIC_IP=YOUR.PUBLIC.IP
+      # Enables GET /vcons on 8080; unset = 503 "vcon API disabled".
+      # - SIPREC_VCON_API_TOKEN=change-me
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz').read()"]
