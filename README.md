@@ -96,8 +96,13 @@ docker run -d \
   -v "$(pwd)/config.yaml:/app/config.yaml:ro" \
   -v "$(pwd)/certs:/app/certs:ro" \
   -e SIPREC_PUBLIC_IP=YOUR.PUBLIC.IP \
+  -e SIPREC_VCON_API_TOKEN=change-me \
   siprec-srs
 ```
+
+`SIPREC_VCON_API_TOKEN` enables the read-only retrieval API on the health
+port (`GET /vcons`, `GET /vcons/<name>`, `Authorization: Bearer <token>`).
+Leave it unset and those routes return `503 {"error": "vcon API disabled"}`.
 
 ## Configuration
 
