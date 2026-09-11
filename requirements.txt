@@ -6,6 +6,9 @@ audioop-lts; python_version >= "3.13"
 # vCon library (>=0.9.1 for spec-correct names: amended, critical)
 vcon>=0.9.1
 
+# vCon signing (signing.py) and SRTP decrypt (srtp.py)
+cryptography>=42.0
+
 # Configuration and utilities
 pyyaml>=6.0
 python-dotenv>=1.0.0
