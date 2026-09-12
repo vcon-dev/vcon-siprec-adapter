@@ -5,13 +5,15 @@ No pjsua2. SIPREC is a one-way recording delivery: the recording client (SRC)
 sends an INVITE carrying a multipart body (SDP offer + rs-metadata), streams
 RTP to the ports we advertise, and ends with BYE. We only need to be a UAS
 that answers, captures RTP to WAV, and reports the finished session. Signaling
-runs over UDP / TCP / TLS; media is plain RTP (no SRTP for bring-up).
+runs over UDP / TCP / TLS; media is RTP or SDES-keyed SRTP (RFC 4568), chosen
+per m-line by the offer's profile.
 
 The finished session exposes `get_audio_files()` so it plugs straight into the
 existing VConConverter without changes.
 """
 
 import asyncio
+import base64
 import logging
 import os
 import ssl
@@ -23,6 +25,7 @@ from typing import Awaitable, Callable, Dict, List, Optional, Tuple
 from .config import Config
 from .siprec_parser import SIPRECParser, split_multipart
 from .rtp_recorder import RTPRecorder
+from .srtp import SRTPContext, SUITES, choose_crypto
 
 logger = logging.getLogger(__name__)
 
@@ -261,6 +264,11 @@ class SIPRECServer:
 
         sdp, rs_text = self._split_body(msg)
         streams = self.parser.parse_sdp(sdp) if sdp else []
+        if not self._srtp_acceptable(streams):
+            reply(self._response(msg, 488, "Not Acceptable Here"))
+            logger.warning("Rejected SIPREC INVITE call_id=%s: RTP/SAVP offer with no "
+                           "supported crypto suite (we do %s)", call_id, sorted(SUITES))
+            return
         session = SIPRECSession(call_id)
         session.raw_offer_sdp = sdp or ""
         session.raw_rs_metadata = rs_text or ""
@@ -313,10 +321,15 @@ class SIPRECServer:
         if rs_text:
             self._refresh_metadata(session, rs_text)
 
+        offered = self.parser.parse_sdp(sdp)
+        if not self._srtp_acceptable(offered):
+            reply(self._response(msg, 488, "Not Acceptable Here"))
+            return
+
         by_label = {s["label"]: s for s in session.media_streams if s.get("label")}
         answer_media: List[Tuple[Dict, int]] = []
         added = 0
-        for stream in self.parser.parse_sdp(sdp):
+        for stream in offered:
             known = by_label.get(stream.get("label"))
             if known is None and not stream.get("label"):
                 # Unlabelled: fall back to position among existing streams.
@@ -325,6 +338,11 @@ class SIPRECServer:
                      if s["index"] == stream["index"] and not s.get("label")),
                     None)
             if known is not None:
+                # A re-offer may carry a new key or switch profile; take the
+                # offer's view and rekey the live recorder in place.
+                known["profile"] = stream["profile"]
+                known["crypto"] = stream["crypto"]
+                self._setup_srtp(known, session.recorders[known["stream_id"]])
                 answer_media.append((known, known["local_rtp_port"]))
             else:
                 answer_media.append(await self._bind_stream(session, stream))
@@ -393,12 +411,37 @@ class SIPRECServer:
                           sample_rate=self.config.rtp.sample_rate,
                           port_range=(self.config.rtp.port_range_start,
                                       self.config.rtp.port_range_end))
+        self._setup_srtp(stream, rec)
         await rec.start()
         session.recorders[stream_id] = rec
         stream["local_rtp_port"] = rec.local_port
         stream["stream_id"] = stream_id
         session.media_streams.append(stream)
         return stream, rec.local_port
+
+    @staticmethod
+    def _srtp_acceptable(streams: List[Dict]) -> bool:
+        """False if any RTP/SAVP m-line offers no suite we can decrypt."""
+        return all(stream.get("profile") != "RTP/SAVP" or choose_crypto(stream["crypto"])
+                   for stream in streams)
+
+    @staticmethod
+    def _setup_srtp(stream: Dict, rec: RTPRecorder):
+        """Pick the SDES suite for an RTP/SAVP stream and key the recorder.
+
+        Stores the answer's crypto line on the stream as `srtp_answer`
+        (tag, suite, our key). RFC 4568 makes the answerer send its own key
+        even though a recvonly SRS never transmits; the SRC ignores it.
+        """
+        if stream.get("profile") != "RTP/SAVP":
+            rec.srtp = None
+            stream.pop("srtp_answer", None)
+            return
+        chosen = choose_crypto(stream["crypto"])  # guaranteed by _srtp_acceptable
+        rec.srtp = SRTPContext(chosen["suite"], chosen["key"])
+        key_len, salt_len, _ = SUITES[chosen["suite"]]
+        our_key = base64.b64encode(os.urandom(key_len + salt_len)).decode()
+        stream["srtp_answer"] = (chosen["tag"], chosen["suite"], our_key)
 
     async def _on_bye(self, msg: SIPMessage, reply: Callable[[bytes], None]):
         call_id = msg.get("Call-ID")
@@ -471,8 +514,11 @@ class SIPRECServer:
             pt = next((p for p in stream["payload_types"] if p in (0, 8)),
                       stream["payload_types"][0] if stream["payload_types"] else 0)
             name = {0: "PCMU", 8: "PCMA"}.get(pt, "PCMU")
-            lines.append(f"m=audio {port} RTP/AVP {pt}")
+            lines.append(f"m=audio {port} {stream.get('profile', 'RTP/AVP')} {pt}")
             lines.append(f"a=rtpmap:{pt} {name}/8000")
+            if stream.get("srtp_answer"):
+                tag, suite, key = stream["srtp_answer"]
+                lines.append(f"a=crypto:{tag} {suite} inline:{key}")
             lines.append("a=recvonly")
             if stream.get("label"):
                 lines.append(f"a=label:{stream['label']}")
