@@ -190,11 +190,12 @@ class VConConverter:
             all_party_indices = list(range(participant_count))
             party_of_stream = self._party_of_stream(session_data)
             rs_keys = session_data.get('rs_keys') or {}
-            label_of_stream = {
-                s['stream_id']: s.get('label')
+            streams_by_id = {
+                s['stream_id']: s
                 for s in session_data.get('media_streams', [])
                 if s.get('stream_id')
             }
+            label_of_stream = {sid: s.get('label') for sid, s in streams_by_id.items()}
 
             # Sort streams for deterministic dialog ordering / party mapping.
             for stream_idx, (stream_id, audio_file_path) in enumerate(
@@ -277,6 +278,14 @@ class VConConverter:
                     provenance["label"] = label
                 if rs_stream_id:
                     provenance["rs_stream_id"] = rs_stream_id
+                # Media transport: RTP/AVP (plain) or RTP/SAVP, and for SRTP
+                # the negotiated SDES suite, so a consumer can tell whether
+                # this leg was encrypted on the wire. Never the key.
+                stream_meta = streams_by_id.get(stream_id, {})
+                if stream_meta.get('profile'):
+                    provenance["transport"] = stream_meta['profile']
+                if stream_meta.get('srtp_answer'):
+                    provenance["srtp_suite"] = stream_meta['srtp_answer'][1]
                 vcon.vcon_dict.setdefault("attachments", []).append({
                     "purpose": "stream_provenance",
                     "party": parties_for_stream[0] if parties_for_stream else 0,

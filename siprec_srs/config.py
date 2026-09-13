@@ -73,6 +73,11 @@ class RTPConfig:
     # cover at least max_sessions * streams-per-call ports.
     port_range_start: int = 10000
     port_range_end: int = 20000
+    # SRTP policy for offered m-lines (SDES keying, RFC 4568):
+    #   "allow"   answer RTP/AVP as RTP and RTP/SAVP as SRTP (default)
+    #   "require" 488 any offer carrying a plain RTP/AVP audio line
+    #   "off"     488 any RTP/SAVP line (pre-SRTP behaviour)
+    srtp: str = "allow"
 
 
 @dataclass
@@ -325,7 +330,8 @@ class ConfigManager:
                 sample_rate=rtp_data.get('sample_rate', config.rtp.sample_rate),
                 channels=rtp_data.get('channels', config.rtp.channels),
                 port_range_start=rtp_data.get('port_range_start', config.rtp.port_range_start),
-                port_range_end=rtp_data.get('port_range_end', config.rtp.port_range_end)
+                port_range_end=rtp_data.get('port_range_end', config.rtp.port_range_end),
+                srtp=rtp_data.get('srtp', config.rtp.srtp),
             )
         
         # Parse media configuration

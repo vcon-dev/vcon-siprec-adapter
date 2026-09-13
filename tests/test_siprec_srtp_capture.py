@@ -137,3 +137,63 @@ async def test_savp_offer_without_supported_suite_gets_488():
     cli.close()
     assert resp.startswith("SIP/2.0 488"), resp
     assert call_id not in server.sessions
+
+
+def _invite_avp(dst_ip, client_port, call_id):
+    from tests.test_siprec_capture import _invite as plain
+    return plain(dst_ip, 0, client_port, call_id)
+
+
+@pytest.mark.asyncio
+async def test_policy_require_rejects_plain_rtp():
+    server, cli = await _start_server()
+    server.config.rtp.srtp = "require"
+    loop = asyncio.get_event_loop()
+    await loop.sock_sendall(cli, _invite_avp("127.0.0.1", cli.getsockname()[1], "req-1"))
+    resp = await _final_response(loop, cli)
+    await server.stop()
+    cli.close()
+    assert resp.startswith("SIP/2.0 488"), resp
+
+
+@pytest.mark.asyncio
+async def test_policy_off_rejects_savp():
+    server, cli = await _start_server()
+    server.config.rtp.srtp = "off"
+    loop = asyncio.get_event_loop()
+    await loop.sock_sendall(cli, _invite("127.0.0.1", cli.getsockname()[1], "off-1",
+                                         [f"1 {SUITE} inline:{INLINE}"]))
+    resp = await _final_response(loop, cli)
+    await server.stop()
+    cli.close()
+    assert resp.startswith("SIP/2.0 488"), resp
+
+
+def test_provenance_records_transport_and_suite(tmp_path):
+    import json
+    import wave as _wave
+    from siprec_srs.config import Config
+    from siprec_srs.vcon_converter import VConConverter
+
+    wav = tmp_path / "s.wav"
+    with _wave.open(str(wav), "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(8000)
+        w.writeframes(b"\x00\x00" * 160)
+    cfg = Config()
+    vcon = VConConverter(lawful_basis_config=cfg.lawful_basis,
+                         media_config=cfg.media).convert_session_to_vcon({
+        "session_id": "s", "call_id": "c", "recording_session_id": "r",
+        "participants": [{"participant_id": "1", "name": "A"}],
+        "start_time": "2026-09-12T00:00:00+00:00",
+        "end_time": "2026-09-12T00:00:01+00:00",
+        "media_streams": [{"stream_id": "s_stream_0", "label": "1",
+                           "profile": "RTP/SAVP",
+                           "srtp_answer": (2, SUITE, "notthekey")}],
+    }, type("Sess", (), {"get_audio_files": lambda self: {"s_stream_0": str(wav)}})())
+    prov = [a for a in vcon.vcon_dict["attachments"]
+            if a.get("purpose") == "stream_provenance"]
+    assert len(prov) == 1
+    body = json.loads(prov[0]["body"])
+    assert body["transport"] == "RTP/SAVP"
+    assert body["srtp_suite"] == SUITE
+    assert "notthekey" not in prov[0]["body"]

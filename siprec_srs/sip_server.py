@@ -266,8 +266,9 @@ class SIPRECServer:
         streams = self.parser.parse_sdp(sdp) if sdp else []
         if not self._srtp_acceptable(streams):
             reply(self._response(msg, 488, "Not Acceptable Here"))
-            logger.warning("Rejected SIPREC INVITE call_id=%s: RTP/SAVP offer with no "
-                           "supported crypto suite (we do %s)", call_id, sorted(SUITES))
+            logger.warning("Rejected SIPREC INVITE call_id=%s: offer fails rtp.srtp=%s "
+                           "policy (supported suites %s)", call_id,
+                           self.config.rtp.srtp, sorted(SUITES))
             return
         session = SIPRECSession(call_id)
         session.raw_offer_sdp = sdp or ""
@@ -419,11 +420,20 @@ class SIPRECServer:
         session.media_streams.append(stream)
         return stream, rec.local_port
 
-    @staticmethod
-    def _srtp_acceptable(streams: List[Dict]) -> bool:
-        """False if any RTP/SAVP m-line offers no suite we can decrypt."""
-        return all(stream.get("profile") != "RTP/SAVP" or choose_crypto(stream["crypto"])
-                   for stream in streams)
+    def _srtp_acceptable(self, streams: List[Dict]) -> bool:
+        """Apply `rtp.srtp` policy; False means answer 488.
+
+        Any RTP/SAVP line must carry a suite we can decrypt. "require"
+        additionally rejects plain RTP/AVP lines; "off" rejects SAVP.
+        """
+        policy = self.config.rtp.srtp
+        for stream in streams:
+            savp = stream.get("profile") == "RTP/SAVP"
+            if savp and (policy == "off" or not choose_crypto(stream["crypto"])):
+                return False
+            if not savp and policy == "require":
+                return False
+        return True
 
     @staticmethod
     def _setup_srtp(stream: Dict, rec: RTPRecorder):

@@ -8,7 +8,7 @@ tearing it back down. Everything is `doctl` / `ssh` from the command line.
 - Partner source IPs (inbound SIPREC): `132.226.155.215`, `129.153.104.169`
   (both Oracle Cloud, US-East — pick a DO NYC region for proximity)
 - Related note: `~/ObsidianVault/memory/projects/siprec-adapter.md`
-- Decisions in force: TLS on 5061, **plain RTP** (no SRTP yet), verify via
+- Decisions in force: TLS on 5061, RTP or SDES-SRTP media, verify via
   metrics + webhook sink + sample vCon.
 
 Status log is at the bottom — append, don't rewrite.
@@ -164,7 +164,7 @@ Deliverables to David after a good test call:
 ```
 Target: <DROPLET_IP>:5061
 Transport: TLS
-Media: plain RTP (no SRTP)
+Media: RTP or SRTP (SDES, AES_CM_128_HMAC_SHA1_80 / _32)
 ```
 
 ## 9. Teardown (stop the meter)
@@ -178,8 +178,10 @@ doctl compute droplet delete "$DROPLET" --force
 
 ## Known gaps / watch items
 
-- **SRTP unbuilt.** David asked about AES-CM suites; adapter does plaintext RTP
-  only. This test is RTP. Secure media is a separate work item.
+- **SRTP** (added 2026-09-12, `feat/srtp-sdes`): SDES-keyed SRTP is now
+  negotiated per m-line when the SRC offers `RTP/SAVP` with an AES-CM suite.
+  Plain RTP still works. `rtp.srtp: require` in `config.yaml` refuses plain
+  offers if a test must prove encryption. Firewall/port range unchanged.
 - **RTP port range is an assumption** (`10000-20000/udp`). If capture fails,
   check `docker logs` for the actual negotiated ports and widen the firewall.
 - **Self-signed TLS cert.** Fine for testing; David's side must not verify the
