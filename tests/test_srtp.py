@@ -50,10 +50,17 @@ def _hdr(seq: int, ssrc: int = 0xCAFEBABE, pt: int = 0) -> bytes:
     return struct.pack(">BBHII", 0x80, pt, seq, seq * 160, ssrc)
 
 
+INLINE_256 = base64.b64encode(bytes(range(32)) + MASTER_SALT).decode()
+
+
+def _inline_for(suite):
+    return INLINE_256 if suite.startswith("AES_256") else INLINE
+
+
 @pytest.mark.parametrize("suite", list(srtp.SUITES))
 def test_round_trip(suite):
-    sender = SRTPContext(suite, INLINE)
-    receiver = SRTPContext(suite, INLINE)
+    sender = SRTPContext(suite, _inline_for(suite))
+    receiver = SRTPContext(suite, _inline_for(suite))
     payload = bytes(range(160))
     for seq in (100, 101, 102):
         pkt = _protect(sender, _hdr(seq), payload, roc=0)
@@ -89,6 +96,11 @@ def test_roc_rolls_over_at_seq_wrap():
     assert receiver.unprotect(_protect(sender, _hdr(0x0001), payload, 1)) == _hdr(0x0001) + payload
     # late packet from before the wrap still authenticates with ROC 0
     assert receiver.unprotect(_protect(sender, _hdr(0xFFFD), payload, 0)) == _hdr(0xFFFD) + payload
+
+
+def test_aes256_rejects_128_bit_key():
+    with pytest.raises(SRTPError):
+        SRTPContext("AES_256_CM_HMAC_SHA1_80", INLINE)
 
 
 def test_bad_inputs():

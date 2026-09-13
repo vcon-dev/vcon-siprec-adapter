@@ -164,7 +164,7 @@ Deliverables to David after a good test call:
 ```
 Target: <DROPLET_IP>:5061
 Transport: TLS
-Media: RTP or SRTP (SDES, AES_CM_128_HMAC_SHA1_80 / _32)
+Media: RTP or SRTP (SDES, AES_CM_128 / AES_256_CM, HMAC_SHA1_80 / _32)
 ```
 
 ## 9. Teardown (stop the meter)

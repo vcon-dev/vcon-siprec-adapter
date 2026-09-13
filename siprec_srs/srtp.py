@@ -2,10 +2,10 @@
 SRTP (RFC 3711) unprotect for SDES-keyed (RFC 4568) receive-only streams.
 
 The SRS never sends media, so this is decrypt + authenticate only. Supports
-the two suites every SIPREC SRC actually offers:
+the four SDES suites SIPREC SRCs actually offer:
 
-    AES_CM_128_HMAC_SHA1_80   (80-bit auth tag)
-    AES_CM_128_HMAC_SHA1_32   (32-bit auth tag)
+    AES_CM_128_HMAC_SHA1_80 / _32   (RFC 4568, 128-bit key)
+    AES_256_CM_HMAC_SHA1_80 / _32   (RFC 6188, 256-bit key, same PRF)
 
 `SRTPContext.unprotect(packet)` returns the plain RTP packet (header + payload)
 or raises `SRTPError`. Feed the result straight into the existing depacketizer.
@@ -26,6 +26,8 @@ SUITES: Dict[str, Tuple[int, int, int]] = {
     # suite -> (key_len, salt_len, auth_tag_len) in bytes
     "AES_CM_128_HMAC_SHA1_80": (16, 14, 10),
     "AES_CM_128_HMAC_SHA1_32": (16, 14, 4),
+    "AES_256_CM_HMAC_SHA1_80": (32, 14, 10),
+    "AES_256_CM_HMAC_SHA1_32": (32, 14, 4),
 }
 
 # RFC 3711 4.3.1 key derivation labels
@@ -37,7 +39,8 @@ class SRTPError(Exception):
 
 
 def _aes_cm_keystream(key: bytes, iv: bytes, n: int) -> bytes:
-    """AES-CM (AES-128 in counter mode, RFC 3711 4.1.1): n bytes of keystream."""
+    """AES-CM (AES in counter mode, RFC 3711 4.1.1): n bytes of keystream.
+    AES-128 or AES-256 by key length (RFC 6188 uses the same construction)."""
     enc = Cipher(algorithms.AES(key), modes.CTR(iv)).encryptor()
     return enc.update(bytes(n)) + enc.finalize()
 

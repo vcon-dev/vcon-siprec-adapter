@@ -10,7 +10,8 @@ project loosely follows [Semantic Versioning](https://semver.org/).
 
 - **SRTP receive** (RFC 3711, SDES keying per RFC 4568). An `RTP/SAVP`
   m-line is answered SAVP with the first supported `a=crypto` suite
-  (`AES_CM_128_HMAC_SHA1_80`, `_32`) and a fresh answer key; media is
+  (`AES_CM_128_HMAC_SHA1_80/_32`, `AES_256_CM_HMAC_SHA1_80/_32`) and a
+  fresh answer key; media is
   authenticated and decrypted before the existing depacketizer. Mixed
   AVP/SAVP offers work per m-line; re-offers rekey the live recorder.
 - **`rtp.srtp`** policy: `allow` (default) | `require` | `off`. Offers
