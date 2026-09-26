@@ -6,7 +6,6 @@ import logging
 import base64
 import hashlib
 import json
-import tempfile
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timezone
 from pathlib import Path
@@ -85,7 +84,7 @@ class VConConverter:
                 "by_action": str(vendor.get('byAction', '')),
                 "xferred_group_id": str(vendor.get('xferredGroupID', '')),
                 "conversion_timestamp": datetime.now(timezone.utc).isoformat(),
-            })
+            }, start=session_data.get('start_time'))
 
             participants = enrich_participants_from_vendor(
                 session_data.get('participants', []) or [], vendor,
@@ -279,8 +278,10 @@ class VConConverter:
                     provenance["rs_stream_id"] = rs_stream_id
                 vcon.vcon_dict.setdefault("attachments", []).append({
                     "purpose": "stream_provenance",
+                    "start": start_time,
                     "party": parties_for_stream[0] if parties_for_stream else 0,
                     "dialog": dialog_index,
+                    "mediatype": "application/json",
                     "encoding": "json",
                     "body": json.dumps(provenance),
                 })
@@ -334,10 +335,16 @@ class VConConverter:
 
             # The vcon lib's add_attachment() rejects encoding="json"; build
             # the attachment dict directly per the speckit guidance.
+            attachment_start = (
+                session_data.get('start_time')
+                or datetime.now(timezone.utc).isoformat()
+            )
             vcon.vcon_dict.setdefault("attachments", []).append({
                 "purpose": "session_metadata",
+                "start": attachment_start,
                 "party": 0,
                 "dialog": 0,
+                "mediatype": "application/json",
                 "encoding": "json",
                 "body": json.dumps(session_info),
             })
@@ -354,6 +361,10 @@ class VConConverter:
             if any(wire.values()):
                 vcon.vcon_dict.setdefault("attachments", []).append({
                     "purpose": "siprec_wire",
+                    "start": attachment_start,
+                    "party": 0,
+                    "dialog": 0,
+                    "mediatype": "application/json",
                     "encoding": "json",
                     "body": json.dumps(wire),
                 })
@@ -361,18 +372,25 @@ class VConConverter:
         except Exception as e:
             logger.error(f"Error adding session metadata attachment: {e}")
     
-    def _add_tags_attachment(self, vcon: Vcon, tags: Dict[str, str]):
+    def _add_tags_attachment(
+        self, vcon: Vcon, tags: Dict[str, str], start: Optional[str] = None,
+    ):
         """Append a draft-02-compliant tags attachment.
 
         See speckit "Tags Convention": purpose=tags, party=0, dialog=0,
-        encoding=json, body=JSON-stringified object.
+        encoding=json, body=JSON-stringified object. `start` and `mediatype`
+        are core Attachment-object requirements whenever a body is present
+        (draft-ietf-vcon-vcon-core-04 Attachment Object; CON-1091 schema
+        test).
         """
         # Drop empty values so consumers don't see "key": "".
         clean = {k: v for k, v in tags.items() if v not in (None, "")}
         vcon.vcon_dict.setdefault("attachments", []).append({
             "purpose": "tags",
+            "start": start or datetime.now(timezone.utc).isoformat(),
             "party": 0,
             "dialog": 0,
+            "mediatype": "application/json",
             "encoding": "json",
             "body": json.dumps(clean),
         })
@@ -439,8 +457,24 @@ class VConConverter:
             logger.error(f"Error adding sip_signaling extension data: {e}")
 
     def _add_lawful_basis(self, vcon: Vcon, session_data: Dict[str, Any]):
-        """Emit a lawful_basis attachment per draft-howe-vcon-lawful-basis."""
+        """Emit a lawful_basis attachment per draft-howe-vcon-lawful-basis.
+
+        CON-1091: `lawful_basis.lawful_basis` has no code default. If it is
+        enabled but unset, log one warning and omit the attachment rather
+        than guessing a basis (deployments relying on the old
+        "legitimate_interests" default must now set it explicitly — see
+        CHANGELOG).
+        """
         if not self.lawful_basis_config.enabled:
+            return
+        if not self.lawful_basis_config.lawful_basis:
+            logger.warning(
+                "lawful_basis is enabled but no basis is configured "
+                "(config.yaml `lawful_basis.lawful_basis` or "
+                "SIPREC_LAWFUL_BASIS); omitting the lawful_basis attachment "
+                "for session %s",
+                session_data.get('session_id'),
+            )
             return
         try:
             add_lawful_basis_attachment(
@@ -509,9 +543,11 @@ class VConConverter:
             with open(file_path, 'rb') as f:
                 audio_data = f.read()
 
-            # vCon spec uses base64url (RFC 4648 §5), not standard base64.
-            # urlsafe_b64encode produces base64url; strip padding per common usage.
-            encoded_data = base64.urlsafe_b64encode(audio_data).decode('ascii')
+            # vCon spec uses unpadded base64url (RFC 4648 §5). urlsafe_b64encode
+            # produces base64url but still pads with '='; CON-1091's schema
+            # test caught that the padding was never actually stripped despite
+            # this comment saying it was.
+            encoded_data = base64.urlsafe_b64encode(audio_data).decode('ascii').rstrip('=')
             return encoded_data
 
         except Exception as e:
@@ -546,123 +582,18 @@ class VConConverter:
             logger.warning(f"Could not determine audio duration for {file_path}: {e}")
             return None
     
-    def merge_audio_streams(self, audio_files: Dict[str, str], 
-                          output_path: str) -> Optional[str]:
-        """Merge multiple audio streams into a single file."""
-        try:
-            from pydub import AudioSegment
-            
-            merged_audio = None
-            
-            for stream_id, file_path in audio_files.items():
-                if not Path(file_path).exists():
-                    continue
-                
-                # Load audio file
-                audio = AudioSegment.from_wav(file_path)
-                
-                if merged_audio is None:
-                    merged_audio = audio
-                else:
-                    # Mix with existing audio
-                    merged_audio = merged_audio.overlay(audio)
-            
-            if merged_audio:
-                # Export merged audio
-                merged_audio.export(output_path, format="wav")
-                return output_path
-            
-            return None
-            
-        except Exception as e:
-            logger.error(f"Error merging audio streams: {e}")
-            return None
-    
-    def create_summary_vcon(self, session_data: Dict[str, Any], 
-                          rtp_handler: RTPHandler) -> Optional[Vcon]:
-        """Create a summary vCon with merged audio."""
-        try:
-            # Create base vCon
-            vcon = self.convert_session_to_vcon(session_data, rtp_handler)
-            if not vcon:
-                return None
-            
-            # Get audio files
-            audio_files = rtp_handler.get_audio_files()
-            
-            if len(audio_files) > 1:
-                # Merge audio streams
-                temp_merged = tempfile.mktemp(suffix='_merged.wav')
-                merged_file = self.merge_audio_streams(audio_files, temp_merged)
-                
-                if merged_file:
-                    # Replace individual audio dialogs with merged one
-                    self._replace_with_merged_audio(vcon, merged_file, session_data)
-            
-            return vcon
-            
-        except Exception as e:
-            logger.error(f"Error creating summary vCon: {e}")
-            return None
-    
-    def _replace_with_merged_audio(self, vcon: Vcon, merged_file: str, 
-                                 session_data: Dict[str, Any]):
-        """Replace individual audio dialogs with merged audio."""
-        try:
-            # Remove existing audio dialogs
-            dialogs_to_remove = []
-            for i, dialog_dict in enumerate(vcon.dialog):
-                if dialog_dict.get('type') == 'recording':
-                    dialogs_to_remove.append(i)
-            
-            # Remove in reverse order to maintain indices
-            for i in reversed(dialogs_to_remove):
-                vcon.dialog.pop(i)
-            
-            audio_data = self._read_audio_file(merged_file)
-            if audio_data:
-                start_time = session_data.get(
-                    'start_time', datetime.now(timezone.utc).isoformat()
-                )
-                participant_count = len(session_data.get('participants', []))
-
-                dialog = Dialog(
-                    type="recording",
-                    start=start_time,
-                    parties=list(range(participant_count)),
-                    mimetype="audio/wav",
-                    body=audio_data,
-                    encoding="base64url",
-                    filename=Path(merged_file).name,
-                    originator=0 if participant_count else None,
-                )
-
-                vcon.add_dialog(dialog)
-
-                dialog_index = len(vcon.dialog) - 1
-                vcon.vcon_dict.setdefault("attachments", []).append({
-                    "purpose": "stream_provenance",
-                    "party": 0,
-                    "dialog": dialog_index,
-                    "encoding": "json",
-                    "body": json.dumps({
-                        "kind": "merged_audio",
-                        "source": "rtp_capture",
-                    }),
-                })
-            
-            # Clean up temporary file
-            Path(merged_file).unlink(missing_ok=True)
-            
-        except Exception as e:
-            logger.error(f"Error replacing with merged audio: {e}")
-    
     def validate_vcon(self, vcon: Vcon) -> bool:
         """Validate a vCon object.
 
-        Skips vcon.is_valid() because that validator rejects extension-defined
-        attachments (e.g. lawful_basis attachments use `type:` per their
-        draft, not `purpose:`).
+        This is a cheap structural sanity check on the object we just built
+        (syntax version, parties, at least one dialog), not a spec-shape
+        validator; it deliberately does not call `vcon.is_valid()`. CON-1091:
+        the historical reason for skipping it (the lawful_basis attachment
+        lacked `purpose` and failed `is_valid()`'s "every attachment needs a
+        purpose" check) is fixed now that `add_lawful_basis_attachment` emits
+        `purpose` too. Full spec-shape conformance is asserted by the vendored
+        JSON Schema in `tests/test_schema_validation.py`, which is a more
+        complete check than `is_valid()` covers.
         """
         try:
             if vcon.vcon_dict.get("vcon") != "0.4.0":

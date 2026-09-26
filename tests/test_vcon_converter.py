@@ -102,7 +102,19 @@ class TestSpecCompliance:
         )
         extensions = vcon.vcon_dict.get("extensions", [])
         assert "sip-signaling" in extensions
-        assert "lawful_basis" in extensions
+        # CON-1091: lawful_basis has no code default, so the unconfigured
+        # converter (this class's setup_method) does not declare it.
+        # TestLawfulBasisAttachment covers the configured-basis case.
+        assert "lawful_basis" not in extensions
+
+    def test_extensions_include_lawful_basis_when_configured(self):
+        converter = VConConverter(
+            lawful_basis_config=LawfulBasisConfig(lawful_basis="consent")
+        )
+        vcon = converter.convert_session_to_vcon(
+            _session_data(), _empty_rtp_handler()
+        )
+        assert "lawful_basis" in vcon.vcon_dict.get("extensions", [])
 
     def test_role_stays_in_meta_extension(self):
         """`role` is an EXTENSION-only Party field (speckit Party Object), so it
@@ -292,18 +304,22 @@ class TestSipSignalingExtension:
 
 
 class TestLawfulBasisAttachment:
-    def test_default_config_emits_attachment(self):
+    def test_default_config_omits_attachment_and_warns(self, caplog):
+        """CON-1091: no code default. Unset `lawful_basis` (the dataclass
+        default) must log one warning and omit the attachment, not fall
+        back to a guessed basis."""
         converter = VConConverter()
-        vcon = converter.convert_session_to_vcon(
-            _session_data(), _empty_rtp_handler()
-        )
+        with caplog.at_level("WARNING"):
+            vcon = converter.convert_session_to_vcon(
+                _session_data(), _empty_rtp_handler()
+            )
         atts = vcon.vcon_dict.get("attachments", [])
-        lb = [a for a in atts if a.get("type") == "lawful_basis"]
-        assert len(lb) == 1
-        # Spec exception: lawful_basis uses `type:` not `purpose:`.
-        assert "purpose" not in lb[0]
-        body = json.loads(lb[0]["body"])
-        assert body["lawful_basis"] == "legitimate_interests"
+        assert not any(
+            a.get("type") == "lawful_basis" or a.get("purpose") == "lawful_basis"
+            for a in atts
+        )
+        assert "lawful_basis" not in vcon.vcon_dict.get("extensions", [])
+        assert any("lawful_basis" in r.message for r in caplog.records)
 
     def test_disabled_config_omits_attachment(self):
         converter = VConConverter(
@@ -317,7 +333,7 @@ class TestLawfulBasisAttachment:
         # And the extension must NOT be declared if no attachment was emitted.
         assert "lawful_basis" not in vcon.vcon_dict.get("extensions", [])
 
-    def test_custom_purposes_propagate(self):
+    def test_configured_basis_emits_purpose_and_type(self):
         converter = VConConverter(
             lawful_basis_config=LawfulBasisConfig(
                 enabled=True,
@@ -330,9 +346,14 @@ class TestLawfulBasisAttachment:
         )
         lb = next(
             a for a in vcon.vcon_dict["attachments"]
-            if a.get("type") == "lawful_basis"
+            if a.get("purpose") == "lawful_basis"
         )
-        body = json.loads(lb["body"])
+        # CON-1091: both fields present (see add_lawful_basis_attachment
+        # docstring), and body is the raw JSON object, not a json.dumps
+        # string.
+        assert lb["type"] == "lawful_basis"
+        assert isinstance(lb["body"], dict)
+        body = lb["body"]
         assert body["lawful_basis"] == "consent"
         assert {g["purpose"] for g in body["purpose_grants"]} == {
             "recording", "analysis", "training"

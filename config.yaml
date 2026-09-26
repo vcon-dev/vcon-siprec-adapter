@@ -23,7 +23,12 @@ webhooks:
   endpoints:
     - url: "https://api.example.com/vcons"
       headers:
-        Authorization: "Bearer your-token-here"
+        # Placeholder, not a real credential. This file is loaded as-is
+        # (main.py does not merge config.yaml with env vars), so replace
+        # this before deploying, or drop `webhooks.endpoints` here entirely
+        # and run without a config file so SIPREC_WEBHOOK_URL /
+        # SIPREC_WEBHOOK_TOKEN (see .env.example) supply it instead.
+        Authorization: "Bearer CHANGE_ME"
       retry_attempts: 3
       timeout: 30
       backoff_factor: 2.0
@@ -85,7 +90,12 @@ rtp:
 
 lawful_basis:
   enabled: true
-  lawful_basis: "legitimate_interests"  # consent | contract | legal_obligation | vital_interests | public_task | legitimate_interests
+  # No default (CON-1091): if this is unset while enabled, the adapter logs
+  # one warning and omits the attachment rather than guessing a basis. Set
+  # explicitly, here or via SIPREC_LAWFUL_BASIS.
+  # One of: consent | contract | legal_obligation | vital_interests |
+  # public_task | legitimate_interests
+  lawful_basis: "legitimate_interests"
   purposes:
     - "recording"
     - "transcription"

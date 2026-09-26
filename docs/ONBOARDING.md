@@ -120,10 +120,16 @@ attachments, analysis, signatures). Spec target:
 ### Spec-compliance non-negotiables
 - Analysis field is **`schema`**, never `schema_version`. **`vendor`**
   REQUIRED on every analysis entry.
-- Attachments use **`purpose`**, never `type` (`lawful_basis` is the
-  documented exception).
-- Body is always a **string** — JSON content goes through `json.dumps`
-  with `encoding: "json"`.
+- Attachments use **`purpose`**. `lawful_basis` carries `type` too,
+  alongside `purpose` (`add_lawful_basis_attachment` docstring has the
+  consumers that still key off `type`; CON-1091).
+- Body is a **string** for most attachments here (JSON content goes
+  through `json.dumps` with `encoding: "json"`) — a known divergence from
+  draft-04, which says an `encoding: "json"` body should be the JSON value
+  itself. `lawful_basis`'s body was switched to the raw object under
+  CON-1091; `session_metadata`, `sip-message-trace`, `tags`, and
+  `stream_provenance` were left as json.dumps strings, out of that card's
+  scope pending CON-736.
 - External references require both `url` and `content_hash` formatted
   `sha512-<base64url-unpadded>`.
 - Timestamps are ISO-8601 with explicit timezone.
@@ -143,7 +149,7 @@ attachments, analysis, signatures). Spec target:
   temporary WAVs are retained.
 
 ### Spec exceptions you must remember
-- `lawful_basis` attachments use **`type:`** not `purpose:`.
+- `lawful_basis` attachments carry **both** `purpose:` and `type:`.
 - Transcripts go in **`analysis[]`** not `attachments[]`.
 - Every extension used MUST be declared in top-level `extensions[]`.
 

@@ -149,7 +149,7 @@ media:
 
 lawful_basis:
   enabled: true
-  lawful_basis: "legitimate_interests"
+  lawful_basis: "legitimate_interests"  # no default; unset + enabled omits the attachment (CON-1091)
   purposes: ["recording", "transcription", "analysis"]
 
 signing:
@@ -255,18 +255,25 @@ signing, it's wrapped in a JWS form (`payload` + `signatures`).
       "body": "{\"source\":\"siprec\",\"call_id\":\"call-123@example.com\",\"recording_session_id\":\"session-456\"}"
     },
     {
+      "purpose": "lawful_basis",
       "type": "lawful_basis",
       "party": 0, "dialog": 0,
+      "mediatype": "application/json",
       "encoding": "json",
-      "body": "{\"lawful_basis\":\"legitimate_interests\", ...}"
+      "body": {"lawful_basis": "legitimate_interests", "...": "..."}
     }
   ]
 }
 ```
 
 Notes on the spec-defined exceptions:
-- `lawful_basis` attachments use `type:` (not `purpose:`), as defined by
-  `draft-howe-vcon-lawful-basis`.
+- `lawful_basis` attachments carry both `purpose: "lawful_basis"` (core
+  spec) and `type: "lawful_basis"` (`draft-howe-vcon-lawful-basis`, and
+  still checked by some conserver consumers) — see
+  `add_lawful_basis_attachment` in `siprec_srs/vcon_extensions.py` for why.
+  There is no default basis: if `lawful_basis.lawful_basis` is unset while
+  `lawful_basis.enabled` is true, the adapter logs a warning and omits the
+  attachment (`CON-1091`; see CHANGELOG).
 - Transcripts (when a `TranscriptionProvider` is configured) appear in
   `analysis[]`, **not** `attachments[]`, per `draft-howe-vcon-wtf-extension`.
 - External-media mode replaces the dialog `body` + `encoding` with `url` +

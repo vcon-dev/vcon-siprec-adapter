@@ -69,3 +69,4 @@ test_recordings/
 
 # oh-my-claudecode plugin session state (per-machine scratch)
 .omc/
+.venv-scratch/

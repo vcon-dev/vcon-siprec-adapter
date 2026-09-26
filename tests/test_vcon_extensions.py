@@ -114,24 +114,28 @@ class TestLawfulBasisAttachment:
         d = self._build()
         assert LAWFUL_BASIS_EXTENSION in d["extensions"]
 
-    def test_uses_type_not_purpose(self):
-        """lawful_basis is the documented exception that uses `type:`."""
+    def test_uses_purpose_and_type(self):
+        """CON-1091: emit both `purpose` (draft-04) and `type` (legacy
+        consumers, see add_lawful_basis_attachment docstring)."""
         d = self._build()
         a = d["attachments"][0]
+        assert a["purpose"] == "lawful_basis"
         assert a["type"] == "lawful_basis"
-        assert "purpose" not in a
 
     def test_attachment_shape(self):
         d = self._build()
         a = d["attachments"][0]
         assert a["party"] == 0
         assert a["dialog"] == 0
+        assert a["mediatype"] == "application/json"
         assert a["encoding"] == "json"
-        assert isinstance(a["body"], str)
+        # draft-04: encoding=json bodies are the JSON value itself, not a
+        # json.dumps string.
+        assert isinstance(a["body"], dict)
 
     def test_body_required_fields(self):
         d = self._build()
-        body = json.loads(d["attachments"][0]["body"])
+        body = d["attachments"][0]["body"]
         assert body["lawful_basis"] == "legitimate_interests"
         assert body["expiration"] is None  # explicit null permitted
         assert isinstance(body["purpose_grants"], list)
@@ -152,4 +156,4 @@ class TestLawfulBasisAttachment:
     def test_all_six_lawful_bases_accepted(self):
         for basis in VALID_LAWFUL_BASES:
             d = self._build(lawful_basis=basis)
-            assert json.loads(d["attachments"][0]["body"])["lawful_basis"] == basis
+            assert d["attachments"][0]["body"]["lawful_basis"] == basis
