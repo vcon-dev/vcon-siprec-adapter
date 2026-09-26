@@ -116,10 +116,18 @@ class MediaConfig:
 class LawfulBasisConfig:
     """Default lawful_basis attachment for emitted vCons.
 
-    See draft-howe-vcon-lawful-basis. Set `enabled: false` to omit.
+    See draft-howe-vcon-lawful-basis. Set `enabled: false` to omit the
+    attachment outright.
+
+    CON-1091: `lawful_basis` has no default. The code must never guess a
+    deployment's lawful basis for recording; an operator who wants the
+    attachment emitted has to say what it is, in `config.yaml`'s
+    `lawful_basis.lawful_basis` key or the `SIPREC_LAWFUL_BASIS` env var.
+    Leaving it unset (with `enabled: true`) logs one warning per process
+    and omits the attachment rather than emitting a default basis.
     """
     enabled: bool = True
-    lawful_basis: str = "legitimate_interests"
+    lawful_basis: Optional[str] = None
     purposes: List[str] = field(default_factory=lambda: ["recording"])
     expiration: Optional[str] = None  # ISO 8601 or None for indefinite
     justification: Optional[str] = (
@@ -252,7 +260,18 @@ class ConfigManager:
         
         if webhook_config:
             config['webhooks'] = webhook_config
-        
+
+        # Lawful basis configuration (CON-1091: no code default, must be
+        # set explicitly via config.yaml or this env var).
+        lawful_basis_config = {}
+        if enabled := os.getenv('SIPREC_LAWFUL_BASIS_ENABLED'):
+            lawful_basis_config['enabled'] = enabled.lower() == 'true'
+        if basis := os.getenv('SIPREC_LAWFUL_BASIS'):
+            lawful_basis_config['lawful_basis'] = basis
+
+        if lawful_basis_config:
+            config['lawful_basis'] = lawful_basis_config
+
         # Logging configuration
         logging_config = {}
         if level := os.getenv('SIPREC_LOG_LEVEL'):

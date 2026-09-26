@@ -6,8 +6,8 @@ the `vcon` library's typed APIs, because:
 
   * The `add_attachment()` helper rejects `encoding="json"` (lib quirk
     documented in the global CLAUDE.md).
-  * Extension-defined attachment shapes (e.g. lawful_basis using `type:`
-    instead of `purpose:`) don't fit the lib's core attachment model.
+  * The lawful_basis attachment carries both `purpose` and `type` (see
+    `add_lawful_basis_attachment` docstring for why).
 
 Always declare the extension in the top-level `extensions[]` list.
 """
@@ -129,10 +129,26 @@ def add_lawful_basis_attachment(
     granted_at: Optional[str] = None,
     justification: Optional[str] = None,
 ) -> None:
-    """Append a `type: "lawful_basis"` attachment per draft-howe-vcon-lawful-basis.
+    """Append a `lawful_basis` attachment per draft-howe-vcon-lawful-basis.
 
-    The lawful_basis attachment uses `type:` not `purpose:` — this is the
-    documented exception to the core "use purpose" rule (see global CLAUDE.md).
+    Emits both `purpose: "lawful_basis"` (draft-ietf-vcon-vcon-core-04,
+    CON-1091) and `type: "lawful_basis"` (this attachment's own draft, and
+    the value some existing consumers key off of). CON-1091 found two
+    reasons to keep `type` alongside `purpose` rather than drop it:
+
+      * `vcon-lib`'s `Vcon.is_valid()` requires `purpose` on every
+        attachment (`purpose" not in attachment` is a hard error), so a
+        `type`-only attachment fails core validation.
+      * conserver's `pii_redact` link (vcon-server
+        `conserver/links/pii_redact/redactor.py`) still special-cases
+        `att.get("type") == "lawful_basis"` when it builds and recognizes
+        these attachments, and vcon-server's read-path legacy-field
+        normalizer (`common/lib/vcon_compat.py::_normalize_attachment`)
+        explicitly preserves `type` when `purpose` is *also* present,
+        treating the dual-field shape as legitimate rather than legacy.
+
+    The body is the raw JSON object (draft-04 `encoding: "json"` bodies are
+    the JSON value itself, not a `json.dumps` string).
     """
     if lawful_basis not in VALID_LAWFUL_BASES:
         raise ValueError(
@@ -162,11 +178,13 @@ def add_lawful_basis_attachment(
         body["justification"] = justification
 
     attachment = {
+        "purpose": "lawful_basis",
         "type": "lawful_basis",
         "party": party_index,
         "dialog": dialog_index,
+        "mediatype": "application/json",
         "encoding": "json",
-        "body": json.dumps(body),
+        "body": body,
         "start": granted_at,
     }
     vcon_dict.setdefault("attachments", []).append(attachment)

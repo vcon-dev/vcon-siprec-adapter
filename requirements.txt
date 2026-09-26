@@ -25,6 +25,14 @@ structlog>=23.0.0
 pytest>=7.0.0
 pytest-asyncio>=0.21.0
 pytest-mock>=3.10.0
+# aiohttp_server fixture used by tests/test_webhook_delivery.py. Missing
+# from requirements.txt until CON-1091 added CI (tests/test_webhook_delivery.py
+# already required it; it was previously only present if something else in
+# a dev environment happened to pull it in).
+pytest-aiohttp>=1.0.5
+# tests/test_schema_validation.py (CON-1091): validates converter output
+# against the vendored WG JSON Schema, tests/schema/vcon_json_schema.json.
+jsonschema>=4.0.0
 
 # Development
 black>=23.0.0
