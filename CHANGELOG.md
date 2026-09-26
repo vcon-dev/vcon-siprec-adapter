@@ -9,6 +9,10 @@ project loosely follows [Semantic Versioning](https://semver.org/).
 > Test counts inside dated entries below are point-in-time figures for
 > that entry. The suite currently collects **152 tests**.
 
+### 2026-09-26 Require vcon 0.10.0
+
+- Require `vcon>=0.10.0`, the first vcon-lib release that writes draft-ietf-vcon-vcon-core-04 attachment defaults and raw JSON bodies, and omits empty `meta`/`metadata`.
+
 ### 2026-09-26 — Spec-shape cleanup, lawful_basis default removed (CON-1091)
 
 **Behaviour changes for deployments — read before upgrading:**
