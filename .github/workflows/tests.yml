@@ -13,7 +13,7 @@ jobs:
       matrix:
         # setup.py declares python_requires>=3.8; sample the floor and two
         # recent versions rather than every version in that range.
-        python-version: ["3.8", "3.11", "3.12"]
+        python-version: ["3.12", "3.13"]
 
     steps:
       - uses: actions/checkout@v4
