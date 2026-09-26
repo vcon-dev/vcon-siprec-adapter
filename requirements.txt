@@ -4,7 +4,7 @@
 audioop-lts; python_version >= "3.13"
 
 # vCon library (>=0.9.1 for spec-correct names: amended, critical)
-vcon>=0.9.1
+vcon>=0.10.0
 
 # Configuration and utilities
 pyyaml>=6.0
