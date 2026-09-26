@@ -7,7 +7,64 @@ project loosely follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 > Test counts inside dated entries below are point-in-time figures for
-> that entry. The suite currently collects **125 tests**.
+> that entry. The suite currently collects **152 tests**.
+
+### 2026-09-26 — Spec-shape cleanup, lawful_basis default removed (CON-1091)
+
+**Behaviour changes for deployments — read before upgrading:**
+
+- **`lawful_basis.lawful_basis` no longer defaults to
+  `"legitimate_interests"`.** A deployment that relies on the old
+  hardcoded default and never set this key gets no `lawful_basis`
+  attachment on emitted vCons from this release on (one WARNING is logged
+  per session instead). To keep emitting the attachment, set it
+  explicitly: `lawful_basis.lawful_basis: "legitimate_interests"` in
+  `config.yaml` (or whichever basis is actually correct for the
+  deployment), or the `SIPREC_LAWFUL_BASIS` env var when running without a
+  config file. `lawful_basis.enabled` still defaults to `true` and still
+  gates the attachment outright.
+- **Inline recording-dialog audio (`dialog[].body` with
+  `encoding: "base64url"`) is now unpadded base64url.** The encoder was
+  already labeled base64url but never actually stripped the trailing `=`
+  padding standard base64 uses; a consumer that decodes this body with a
+  strict/standard base64 decoder needs to re-pad first (or use a
+  base64url decoder that tolerates missing padding). `content_hash`
+  values were already unpadded and are unaffected.
+
+**Spec-shape fixes:**
+
+- `lawful_basis` attachments now carry `purpose: "lawful_basis"`
+  (draft-ietf-vcon-vcon-core-04) in addition to `type: "lawful_basis"`
+  (`draft-howe-vcon-lawful-basis`, and conserver's `pii_redact` link,
+  which still keys off `type`); the body is the raw JSON object rather
+  than a `json.dumps` string, and the attachment gained `mediatype:
+  "application/json"`. Also fixes `Vcon.is_valid()` rejecting this
+  attachment for lacking `purpose` (see `vcon_extensions.py`).
+- `tags`, `session_metadata`, `siprec_wire`, and `stream_provenance`
+  attachments were missing `start` (all four) and `mediatype` (all four),
+  and `siprec_wire` was additionally missing `party`/`dialog` — all
+  required by the Attachment Object whenever a body is present. Found by
+  the new vendored-schema test; fixed by adding the missing fields, no
+  attachment restructuring.
+- Removed dead code: `VConConverter.create_summary_vcon`,
+  `merge_audio_streams`, and `_replace_with_merged_audio` (unreferenced;
+  the last of the three also still emitted the legacy `mimetype` field).
+- `config.yaml`'s example webhook Bearer token is now the obviously-fake
+  `CHANGE_ME` instead of a token-shaped placeholder.
+- Vendored the vCon WG's JSON Schema
+  (`tests/schema/vcon_json_schema.json`, see `tests/schema/SOURCE.md`) and
+  added `tests/test_schema_validation.py`, which builds a vCon through the
+  real SIPREC-capture -> converter path and validates it against that
+  schema plus this repo's own non-negotiables (no legacy `mimetype`,
+  required attachment fields, body shape by encoding, no empty
+  `meta`/`metadata`, unpadded base64url).
+- Added `.github/workflows/tests.yml` (pull_request + push to main): this
+  repo had no CI before now.
+- `requirements.txt`: added `jsonschema` (schema test) and
+  `pytest-aiohttp` (already required by
+  `tests/test_webhook_delivery.py`'s `aiohttp_server` fixture, but missing
+  from `requirements.txt` — a plain `pip install -r requirements.txt` could
+  not previously run the full suite).
 
 ### 2026-07-30 — External audio publishing (filesystem + S3)
 
