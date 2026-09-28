@@ -196,10 +196,12 @@ class SIPRECParser:
                         "index": len(streams),
                         "type": "audio",
                         "remote_port": int(fields[1]) if fields[1].isdigit() else 0,
+                        "profile": fields[2],  # RTP/AVP or RTP/SAVP (SRTP)
                         "connection": session_conn,
                         "payload_types": [int(p) for p in fields[3:] if p.isdigit()],
                         "rtpmap": {},
                         "label": None,
+                        "crypto": [],  # RFC 4568 a=crypto offers, in order
                     }
                     streams.append(current)
                 else:
@@ -216,10 +218,40 @@ class SIPRECParser:
                     # RFC 7866 5.2: the label ties this m-line to a <stream>
                     # in the rs-metadata, and MUST be echoed in our answer.
                     current["label"] = val[6:].strip()
+                elif val.startswith("crypto:"):
+                    crypto = self._parse_crypto(val[7:])
+                    if crypto:
+                        current["crypto"].append(crypto)
 
         for s in streams:
             s["codec"] = self._primary_codec(s)
         return streams
+
+    def _parse_crypto(self, val: str) -> Optional[Dict[str, Any]]:
+        """Parse an RFC 4568 SDES crypto attribute (after "crypto:").
+
+        `1 AES_CM_128_HMAC_SHA1_80 inline:<b64key>|2^20|1:4 [params]`
+        Returns tag, suite, key (base64 of master key||salt), lifetime, mki,
+        or None if the line is not an inline key we could use.
+        """
+        fields = val.split()
+        if len(fields) < 3 or not fields[0].isdigit():
+            return None
+        tag, suite, key_params = int(fields[0]), fields[1], fields[2]
+        if not key_params.startswith("inline:"):
+            return None  # only inline keys exist in practice
+        key, *extra = key_params[7:].split("|")
+        lifetime = mki = None
+        for part in extra:
+            if ":" in part:
+                idx, length = part.split(":", 1)
+                if idx.isdigit() and length.isdigit():
+                    mki = (int(idx), int(length))
+            else:
+                lifetime = part
+        return {"tag": tag, "suite": suite, "key": key,
+                "lifetime": lifetime, "mki": mki,
+                "params": fields[3:]}
 
     def _conn_addr(self, val: str) -> Optional[str]:
         # c=IN IP4 1.2.3.4

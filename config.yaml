@@ -87,6 +87,10 @@ rtp:
   # match.
   port_range_start: 10000
   port_range_end: 20000
+  # SRTP policy (SDES keying, RFC 4568). "allow" records RTP/AVP as plain
+  # RTP and RTP/SAVP as SRTP. "require" rejects (488) any plain RTP line.
+  # "off" rejects any SRTP line. Suites: AES_CM_128 and AES_256_CM, HMAC_SHA1_80 / _32.
+  srtp: "allow"
 
 lawful_basis:
   enabled: true

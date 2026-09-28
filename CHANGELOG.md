@@ -6,6 +6,21 @@ project loosely follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### 2026-09-12 — SDES SRTP media
+
+- **SRTP receive** (RFC 3711, SDES keying per RFC 4568). An `RTP/SAVP`
+  m-line is answered SAVP with the first supported `a=crypto` suite
+  (`AES_CM_128_HMAC_SHA1_80/_32`, `AES_256_CM_HMAC_SHA1_80/_32`) and a
+  fresh answer key; media is
+  authenticated and decrypted before the existing depacketizer. Mixed
+  AVP/SAVP offers work per m-line; re-offers rekey the live recorder.
+- **`rtp.srtp`** policy: `allow` (default) | `require` | `off`. Offers
+  outside policy, or SAVP with no supported suite, get `488`.
+- `stream_provenance` attachments now carry `transport` (`RTP/AVP` or
+  `RTP/SAVP`) and, for SRTP, `srtp_suite`. Never the key.
+- `cryptography` declared in `requirements.txt` (signing already used it).
+- Not included: AES-GCM suites, MKI, replay window, DTLS-SRTP.
+
 > Test counts inside dated entries below are point-in-time figures for
 > that entry. The suite currently collects **152 tests**.
 

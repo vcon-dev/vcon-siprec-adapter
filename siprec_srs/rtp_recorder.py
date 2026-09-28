@@ -7,7 +7,8 @@ depacketizes RTP, decodes the payload to 16-bit linear PCM, and writes a WAV.
 
 G.711 (PCMU/PCMA) is decoded with stdlib `audioop` (correct, not hand-rolled).
 Other payload types are written through only if already linear; unknown types
-are counted and skipped. No SRTP (bring-up is plain RTP).
+are counted and skipped. SRTP (SDES-keyed, RFC 3711) is handled by passing
+an `SRTPContext`; packets that fail authentication are counted and dropped.
 """
 
 import asyncio
@@ -16,6 +17,8 @@ import logging
 import struct
 import wave
 from typing import Dict, Optional, Tuple
+
+from .srtp import SRTPContext, SRTPError
 
 try:  # audioop is stdlib on <=3.12, a pip shim (audioop-lts) on >=3.13
     import audioop
@@ -57,8 +60,12 @@ class RTPRecorder:
     def __init__(self, stream_id: str, wav_path: str,
                  bind_host: str = "0.0.0.0", local_port: int = 0,
                  sample_rate: int = 8000,
-                 port_range: Optional[Tuple[int, int]] = None):
+                 port_range: Optional[Tuple[int, int]] = None,
+                 srtp: Optional[SRTPContext] = None):
         self.stream_id = stream_id
+        # When set, every packet is SRTP-unprotected before depacketizing.
+        # Re-assignable mid-stream so a re-offer can rekey.
+        self.srtp = srtp
         self.wav_path = wav_path
         self.bind_host = bind_host
         self.local_port = local_port
@@ -132,6 +139,14 @@ class RTPRecorder:
 
     def handle_packet(self, data: bytes):
         """Depacketize one RTP packet and append decoded PCM to the WAV."""
+        if self.srtp is not None:
+            try:
+                data = self.srtp.unprotect(data)
+            except SRTPError as e:
+                if self.srtp.auth_failures == 1:
+                    logger.warning("stream %s: SRTP %s (further failures counted silently)",
+                                   self.stream_id, e)
+                return
         if len(data) < 12:
             return
         b0, b1 = data[0], data[1]
@@ -261,6 +276,8 @@ class RTPRecorder:
             "duplicate_counts": {f"0x{s:08x}": n
                                  for s, n in self.duplicate_counts.items()},
             "duplicates_dropped": self.duplicate_count,
+            "srtp": self.srtp.suite if self.srtp else None,
+            "srtp_auth_failures": self.srtp.auth_failures if self.srtp else 0,
         }
 
     @property
