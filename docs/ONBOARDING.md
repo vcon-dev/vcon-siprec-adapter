@@ -16,7 +16,7 @@ have Python 3.12+ available (a venv is enough; no PJSIP).
 | **Name** | `siprec-srs-vcon` |
 | **Language** | Python 3.12 (asyncio); Docker image is `python:3.12-slim` |
 | **Domain** | Telephony — SIPREC capture, vCon emission |
-| **Spec target** | IETF `draft-ietf-vcon-vcon-core-02` (vCon syntax `0.4.0`) |
+| **Spec target** | IETF `draft-ietf-vcon-vcon-core-05` (vCon syntax `0.5.0`) |
 | **License** | MIT |
 | **Tests** | 125 collected offline (no PJSIP / `pjsua2`) |
 
@@ -98,7 +98,7 @@ when `media.mode: external`.
 **`transcription.py`** — `TranscriptionProvider` Protocol + noop default.
 
 ### Layer 4 — Cryptography & Audit
-**`signing.py`** — `Signer` wrapping `Vcon.sign()` (RS256 JWS).
+**`signing.py`** — `Signer` wrapping `Vcon.sign()` (RS256 JWS by default; `alg: none` is refused).
 
 ### Layer 5 — Egress
 **`storage_handler.py`** — local-filesystem persistence of vCon JSON.
@@ -115,17 +115,21 @@ retries, and optional DLQ.
 ### vCon = Virtualized Conversation
 A standardized JSON container for conversation data (parties, dialogs,
 attachments, analysis, signatures). Spec target:
-`draft-ietf-vcon-vcon-core-02` with syntax `"0.4.0"`.
+`draft-ietf-vcon-vcon-core-05` with syntax `"0.5.0"`. One SIPREC
+recording session becomes one Session Object; its per-stream `recording`
+Dialogs are referenced from `sessions[].dialog`, and participant join/leave
+becomes `join`/`drop` Events.
 
 ### Spec-compliance non-negotiables
 - Analysis field is **`schema`**, never `schema_version`. **`vendor`**
   REQUIRED on every analysis entry.
-- Attachments use **`purpose`**. `lawful_basis` carries `type` too,
-  alongside `purpose` (`add_lawful_basis_attachment` docstring has the
-  consumers that still key off `type`; CON-1091).
+- Attachments use **`purpose`** and are scoped with `party` plus `dialog`
+  or `session` (core-05 section 4.6). `lawful_basis` is scoped `party` plus
+  `session`; it no longer carries the legacy `type` key.
+- JWS signing rejects `alg: "none"` (`Signer` and the library).
 - Body is a **string** for most attachments here (JSON content goes
   through `json.dumps` with `encoding: "json"`) — a known divergence from
-  draft-04, which says an `encoding: "json"` body should be the JSON value
+  core-05, which says an `encoding: "json"` body should be the JSON value
   itself. `lawful_basis`'s body was switched to the raw object under
   CON-1091; `session_metadata`, `sip-message-trace`, `tags`, and
   `stream_provenance` were left as json.dumps strings, out of that card's
@@ -171,7 +175,7 @@ Open `SIPRECSRSApp._on_session_complete` (fired after BYE):
 6. Cleanup temporary WAVs only on the success path.
 
 ### Step 3 — Read `VConConverter.convert_session_to_vcon`
-Walk `_add_participants`, `_add_audio_dialogs` (inline vs publish),
+Walk `_add_participants`, `_add_session`, `_add_audio_dialogs`, `_add_participant_events` (inline vs publish),
 tags / session metadata / sip-signaling / lawful_basis attachments.
 
 ### Step 4 — Read `media_publisher.py` and `vcon_extensions.py`

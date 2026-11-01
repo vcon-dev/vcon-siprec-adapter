@@ -1,13 +1,13 @@
 # SIPREC SRS to vCon Server
 
 A Session Recording Server (SRS) that receives SIPREC recording sessions and
-emits them as **spec-compliant vCons** (IETF `draft-ietf-vcon-vcon-core-02`,
-syntax `0.4.0`).
+emits them as **spec-compliant vCons** (IETF `draft-ietf-vcon-vcon-core-05`,
+syntax `0.5.0`).
 
 ## Features
 
 - **SIPREC Protocol Support** — RFC 7866; UDP, TCP, and TLS transports.
-- **Spec-compliant vCon emission** — vcon syntax `0.4.0`, `mediatype`,
+- **Spec-compliant vCon emission** — vcon syntax `0.5.0`, one Session per recording session, `mediatype`,
   `base64url` body encoding, ISO-8601 UTC timestamps, attachment vs.
   analysis vs. dialog placed correctly.
 - **Extension support** — emits structured attachments for the
@@ -206,7 +206,7 @@ signing, it's wrapped in a JWS form (`payload` + `signatures`).
 
 ```json
 {
-  "vcon": "0.4.0",
+  "vcon": "0.5.0",
   "uuid": "019e08c5-3065-868f-9dd8-dd37220d739c",
   "created_at": "2026-05-08T12:00:00+00:00",
   "extensions": ["sip-signaling", "lawful_basis"],
@@ -214,12 +214,23 @@ signing, it's wrapped in a JWS form (`payload` + `signatures`).
     { "tel": "+1234567890", "name": "Alice" },
     { "tel": "+1987654321", "name": "Bob" }
   ],
+  "sessions": [
+    {
+      "start": "2026-05-08T12:00:00+00:00",
+      "duration": 300,
+      "parties": [0, 1],
+      "session_id": { "local": "session-456", "remote": "call-123@example.com" },
+      "dialog": [0]
+    }
+  ],
+  "events": [
+    { "type": "join", "time": "2026-05-08T12:00:01+00:00", "sessions": 0, "party": 0 }
+  ],
   "dialog": [
     {
       "type": "recording",
       "start": "2026-05-08T12:00:00+00:00",
       "parties": [0],
-      "originator": 0,
       "mediatype": "audio/wav",
       "duration": 12.34,
       "filename": "stream_0.wav",
@@ -231,13 +242,13 @@ signing, it's wrapped in a JWS form (`payload` + `signatures`).
   "attachments": [
     {
       "purpose": "session_metadata",
-      "party": 0, "dialog": 0,
+      "party": 0, "session": 0,
       "encoding": "json",
       "body": "{\"call_id\":\"call-123@example.com\", ... }"
     },
     {
       "purpose": "sip-message-trace",
-      "party": 0, "dialog": 0,
+      "party": 0, "session": 0,
       "mediatype": "application/json",
       "encoding": "json",
       "body": "{\"call_id\":\"call-123@example.com\", ... }"
@@ -250,14 +261,13 @@ signing, it's wrapped in a JWS form (`payload` + `signatures`).
     },
     {
       "purpose": "tags",
-      "party": 0, "dialog": 0,
+      "party": 0, "session": 0,
       "encoding": "json",
       "body": "{\"source\":\"siprec\",\"call_id\":\"call-123@example.com\",\"recording_session_id\":\"session-456\"}"
     },
     {
       "purpose": "lawful_basis",
-      "type": "lawful_basis",
-      "party": 0, "dialog": 0,
+      "party": 0, "session": 0,
       "mediatype": "application/json",
       "encoding": "json",
       "body": {"lawful_basis": "legitimate_interests", "...": "..."}
@@ -266,11 +276,18 @@ signing, it's wrapped in a JWS form (`payload` + `signatures`).
 }
 ```
 
-Notes on the spec-defined exceptions:
-- `lawful_basis` attachments carry both `purpose: "lawful_basis"` (core
-  spec) and `type: "lawful_basis"` (`draft-howe-vcon-lawful-basis`, and
-  still checked by some conserver consumers) — see
-  `add_lawful_basis_attachment` in `siprec_srs/vcon_extensions.py` for why.
+Notes on the core-05 shape:
+- One SIPREC recording session is one Session Object. Each captured stream is
+  a `recording` Dialog (contributor party in `parties`) that the Session
+  references. `session_id` (`{local: Recording-Session-ID, remote: SIP
+  Call-ID}`) sits on the Session because it applies to every Dialog.
+  `originator` is on the Session, set only when the SRC identifies the
+  calling party and that party is not first in `parties`.
+- RFC 7865 `associate-time` / `disassociate-time` become `join` / `drop`
+  Events (`sessions` plus `party`, no `dialog`). A missing time yields no
+  Event.
+- `lawful_basis` attachments carry `purpose: "lawful_basis"` only, scoped with
+  `party` plus `session`. The legacy `type` key is no longer written.
   There is no default basis: if `lawful_basis.lawful_basis` is unset while
   `lawful_basis.enabled` is true, the adapter logs a warning and omits the
   attachment (`CON-1091`; see CHANGELOG).

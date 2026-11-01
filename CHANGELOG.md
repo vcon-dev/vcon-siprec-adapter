@@ -4,10 +4,45 @@ All notable changes to this project are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project loosely follows [Semantic Versioning](https://semver.org/).
 
+## [2.0.0]
+
+### 2026-11-01 Port to vCon core-05 (syntax 0.5.0)
+
+**Breaking: output is no longer readable as 0.4.0.** Consumers must accept
+`"vcon": "0.5.0"`. Requires `vcon>=1.0.0,<2` (not yet on PyPI at the time of
+writing; install the reference library from source until it is published).
+
+- One SIPREC recording session is now one Session Object in `sessions[]`:
+  `start`, `duration` (from start and end time), `parties` (the receivers),
+  `session_id` `{local: Recording-Session-ID, remote: SIP Call-ID}`, and
+  `dialog` (the per-stream recording Dialogs). `session_id` moved off the
+  Dialogs because it applies to all of them. `originator` moved from the
+  Dialog to the Session and is set only when the SRC's `callingParty` names a
+  participant who is not first in `parties`. It is never guessed.
+- Recording Dialogs no longer carry `originator` or `session_id`; `parties`
+  holds the contributor only. The adapter never emitted a recording-set
+  Dialog.
+- RFC 7865 `associate-time` and `disassociate-time` (parsed from
+  `participantsessionassoc`) become `join` and `drop` Events with `sessions`
+  and `party`. No time, no Event.
+- Attachments are scoped `party` plus `session` (tags, session_metadata,
+  siprec_wire, sip-message-trace, lawful_basis); `stream_provenance` keeps its
+  `dialog` index.
+- `lawful_basis` attachment: `purpose` only, the legacy `type` key is removed,
+  scoped `party` plus `session`. `add_lawful_basis_attachment` takes
+  `session_index` (default 0) and no longer defaults `dialog_index`.
+  Behaviour unchanged: no basis is configured, none is emitted.
+- `Signer` takes `alg` (default RS256) and refuses `none` and non-RSA JWS
+  algorithms with `SigningError`.
+- Vendored schema `tests/schema/vcon_json_schema.json` replaced verbatim with
+  core-05 Appendix C.
+- Fixed `setup.py` description (named core-02) and `docs/ONBOARDING.md`.
+- Version 1.0.0 to 2.0.0.
+
 ## [Unreleased]
 
 > Test counts inside dated entries below are point-in-time figures for
-> that entry. The suite currently collects **152 tests**.
+> that entry. The suite currently collects **180 tests**.
 
 ### 2026-09-26 Require vcon 0.10.0
 

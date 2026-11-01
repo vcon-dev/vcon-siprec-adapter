@@ -19,8 +19,8 @@ if requirements_file.exists():
 
 setup(
     name="siprec-srs-vcon",
-    version="1.0.0",
-    description="SIPREC Session Recording Server that converts SIP conversations to spec-compliant vCon (draft-ietf-vcon-vcon-core-02) format",
+    version="2.0.0",
+    description="SIPREC Session Recording Server that converts SIP conversations to spec-compliant vCon (draft-ietf-vcon-vcon-core-05, syntax 0.5.0) format",
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/vcon-dev/vcon-siprec-adapter",
