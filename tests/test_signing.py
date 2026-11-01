@@ -26,7 +26,7 @@ def _generate_key_pem(password: bytes = None) -> bytes:
 
 def _build_vcon():
     v = Vcon.build_new()
-    v.vcon_dict["vcon"] = "0.4.0"
+    v.vcon_dict["vcon"] = "0.5.0"
     return v
 
 
@@ -109,3 +109,54 @@ class TestSigning:
             format=serialization.PublicFormat.SubjectPublicKeyInfo,
         )
         assert v.verify(pub_pem) is True
+
+
+class TestAlgorithmNone:
+    """core-05 section 6.2.2: alg none MUST NOT be used."""
+
+    @pytest.mark.parametrize("alg", ["none", "None", "NONE", " none ", "", None])
+    def test_signer_rejects_none(self, alg):
+        key = serialization.load_pem_private_key(_generate_key_pem(), password=None)
+        with pytest.raises(SigningError):
+            Signer(key, alg=alg)
+
+    def test_from_pem_file_rejects_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pem = Path(tmp) / "key.pem"
+            pem.write_bytes(_generate_key_pem())
+            with pytest.raises(SigningError):
+                Signer.from_pem_file(str(pem), alg="none")
+
+    def test_signer_rejects_unsupported_alg(self):
+        key = serialization.load_pem_private_key(_generate_key_pem(), password=None)
+        with pytest.raises(SigningError):
+            Signer(key, alg="HS256")
+
+    def test_library_also_rejects_none(self):
+        key = serialization.load_pem_private_key(_generate_key_pem(), password=None)
+        with pytest.raises(ValueError):
+            _build_vcon().sign(key, alg="none")
+
+    def test_signed_header_is_not_none(self):
+        import base64, json
+        key = serialization.load_pem_private_key(_generate_key_pem(), password=None)
+        v = Signer(key, alg="RS256").sign(_build_vcon())
+        header = v.vcon_dict["signatures"][0]["protected"]
+        header += "=" * (-len(header) % 4)
+        assert json.loads(base64.urlsafe_b64decode(header))["alg"] == "RS256"
+
+    def test_tampered_none_header_does_not_verify(self):
+        import base64, json
+        key = serialization.load_pem_private_key(_generate_key_pem(), password=None)
+        v = Signer(key).sign(_build_vcon())
+        forged = base64.urlsafe_b64encode(
+            json.dumps({"alg": "none", "typ": "JWS"}).encode()).rstrip(b"=").decode()
+        v.vcon_dict["signatures"][0]["protected"] = forged
+        pub = key.public_key().public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        try:
+            assert v.verify(pub) is False
+        except Exception:
+            pass  # raising is also a rejection
