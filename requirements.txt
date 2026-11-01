@@ -3,8 +3,9 @@
 # G.711 decode uses stdlib `audioop`, which moved out of stdlib in 3.13:
 audioop-lts; python_version >= "3.13"
 
-# vCon library (>=0.9.1 for spec-correct names: amended, critical)
-vcon>=0.10.0,<1
+# vCon library: 1.0.3 is the first release that writes core-05 (syntax 0.5.0)
+# with the wtf_transcription, content-hash and lawful-basis fixes this adapter relies on
+vcon>=1.0.3,<2
 
 # Configuration and utilities
 pyyaml>=6.0

@@ -200,8 +200,10 @@ class TestSchemaValidation:
 
     async def test_attachments_have_required_fields(self, real_vcon_dict):
         for att in real_vcon_dict.get("attachments", []):
-            for field in ("start", "party", "dialog"):
+            for field in ("start", "party"):
                 assert field in att, f"attachment missing {field!r}: {att}"
+            assert "dialog" in att or "session" in att, (
+                f"attachment needs dialog or session: {att}")
             if "body" in att and att["body"] not in (None, ""):
                 assert "encoding" in att, f"attachment body without encoding: {att}"
                 assert "mediatype" in att, f"attachment body without mediatype: {att}"
@@ -226,13 +228,17 @@ class TestSchemaValidation:
             f"lawful_basis body must be a JSON object, not a string: {att['body']!r}"
         )
 
-    async def test_lawful_basis_carries_purpose_and_type(self, real_vcon_dict):
+    async def test_lawful_basis_scoped_with_party_and_session(self, real_vcon_dict):
         lawful_basis = [
             a for a in real_vcon_dict.get("attachments", [])
             if a.get("purpose") == "lawful_basis"
         ]
         assert len(lawful_basis) == 1
-        assert lawful_basis[0]["type"] == "lawful_basis"
+        att = lawful_basis[0]
+        assert "type" not in att
+        assert att["party"] == 0
+        assert att["session"] == 0
+        assert "dialog" not in att
 
     async def test_no_empty_meta_or_metadata(self, real_vcon_dict):
         def walk(node):
