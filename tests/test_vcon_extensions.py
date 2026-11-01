@@ -64,7 +64,8 @@ class TestSipMessageTrace:
         # core attachment fields
         assert a["purpose"] == "sip-message-trace"
         assert a["party"] == 0
-        assert a["dialog"] == 0
+        assert a["session"] == 0
+        assert "dialog" not in a
         assert a["mediatype"] == "application/json"
         assert a["encoding"] == "json"
         # body must be JSON-encoded string per core spec
@@ -114,19 +115,31 @@ class TestLawfulBasisAttachment:
         d = self._build()
         assert LAWFUL_BASIS_EXTENSION in d["extensions"]
 
-    def test_uses_purpose_and_type(self):
-        """CON-1091: emit both `purpose` (draft-04) and `type` (legacy
-        consumers, see add_lawful_basis_attachment docstring)."""
+    def test_uses_purpose_only(self):
         d = self._build()
         a = d["attachments"][0]
         assert a["purpose"] == "lawful_basis"
-        assert a["type"] == "lawful_basis"
+        assert "type" not in a
+
+    def test_requires_a_scope(self):
+        with pytest.raises(ValueError):
+            add_lawful_basis_attachment(
+                {}, lawful_basis="consent", session_index=None)
+
+    def test_dialog_scope_only_when_asked(self):
+        d = {}
+        add_lawful_basis_attachment(
+            d, lawful_basis="consent", session_index=None, dialog_index=2)
+        a = d["attachments"][0]
+        assert a["dialog"] == 2
+        assert "session" not in a
 
     def test_attachment_shape(self):
         d = self._build()
         a = d["attachments"][0]
         assert a["party"] == 0
-        assert a["dialog"] == 0
+        assert a["session"] == 0
+        assert "dialog" not in a
         assert a["mediatype"] == "application/json"
         assert a["encoding"] == "json"
         # draft-04: encoding=json bodies are the JSON value itself, not a

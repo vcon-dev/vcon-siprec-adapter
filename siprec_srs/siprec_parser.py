@@ -141,6 +141,32 @@ def enrich_participants_from_vendor(
     return participants
 
 
+def find_calling_participant_id(vendor: Any) -> Optional[str]:
+    """participant_id of the vendor `callingParty` node, if the SRC sent one.
+
+    Used for the Session originator. Returns None when the metadata does not
+    say, so the first party stays the implied originator.
+    """
+    if isinstance(vendor, list):
+        for item in vendor:
+            found = find_calling_participant_id(item)
+            if found:
+                return found
+        return None
+    if not isinstance(vendor, dict):
+        return None
+    node = vendor.get("callingParty")
+    if isinstance(node, list):
+        node = node[0] if node else None
+    if isinstance(node, dict) and node.get("participant_id"):
+        return node["participant_id"]
+    for value in vendor.values():
+        found = find_calling_participant_id(value)
+        if found:
+            return found
+    return None
+
+
 def _collect_vendor_parties(node: Any, out: Dict[str, Dict[str, str]]) -> None:
     """Index every vendor node carrying a `participant_id` by that id.
 
@@ -255,6 +281,26 @@ class SIPRECParser:
                 elif tag == "name" and not name and (child.text or "").strip():
                     name = child.text.strip()
             participants.append(self._participant_from_aor(pid, name, aor))
+
+        # RFC 7865 participantsessionassoc carries when each participant joined
+        # and left the recording session. Recorded only when the SRC sent them;
+        # a missing time is never filled in.
+        by_id = {p["id"]: p for p in participants}
+        for el in root.iter():
+            if _localname(el.tag) != "participantsessionassoc":
+                continue
+            target = by_id.get(el.get("participant_id"))
+            if target is None:
+                continue
+            for c in el:
+                ctag = _localname(c.tag)
+                text = (c.text or "").strip()
+                if not text:
+                    continue
+                if ctag == "associate-time":
+                    target["associate_time"] = text
+                elif ctag == "disassociate-time":
+                    target["disassociate_time"] = text
         return participants
 
     def parse_stream_labels(self, xml_text: str) -> Dict[str, str]:

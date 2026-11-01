@@ -165,7 +165,10 @@ async def test_siprec_invite_rtp_bye_produces_vcon(tmp_path):
 
     assert vcon is not None
     d = vcon.vcon_dict
-    assert d["vcon"] == "0.4.0"
+    assert d["vcon"] == "0.5.0"
+    assert len(d["sessions"]) == 1
+    assert d["sessions"][0]["parties"] == [0, 1]
+    assert d["sessions"][0]["dialog"] == [0, 1]
     names = {p.get("name") for p in d["parties"]}
     assert {"Alice", "Bob"} <= names
     tels = {p.get("tel") for p in d["parties"] if p.get("tel")}

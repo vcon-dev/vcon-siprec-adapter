@@ -360,10 +360,16 @@ class SIPRECServer:
         """
         participants = self.parser.parse_rs_metadata(rs_text)
         seen = {p.get("id") for p in session.participants}
+        by_id = {p.get("id"): p for p in session.participants}
         for p in participants:
             if p.get("id") not in seen:
                 session.participants.append(p)
                 seen.add(p.get("id"))
+            else:
+                # Join/leave times can arrive in a later update.
+                for key in ("associate_time", "disassociate_time"):
+                    if p.get(key):
+                        by_id[p.get("id")][key] = p[key]
 
         session.stream_labels.update(self.parser.parse_stream_labels(rs_text))
         session.rs_keys.update(self.parser.parse_session_keys(rs_text))
