@@ -30,6 +30,9 @@ syntax `0.4.0`).
   endpoint exposing webhook-delivery counters.
 - **Local storage** — filesystem with configurable filename pattern.
 - **Audio codec support** — G.711 (μ-law / A-law), G.722, Opus.
+- **SRTP** — SDES-keyed SRTP (RFC 3711 / RFC 4568), suites
+  `AES_CM_128_HMAC_SHA1_80` and `_32`, negotiated per m-line from the
+  offer's `RTP/SAVP` profile. Policy via `rtp.srtp: allow | require | off`.
 - **Concurrent sessions** — multiple SIPREC sessions in flight at once.
 
 ## Quick Start
