@@ -9,8 +9,8 @@ project loosely follows [Semantic Versioning](https://semver.org/).
 ### 2026-11-01 Port to vCon core-05 (syntax 0.5.0)
 
 **Breaking: output is no longer readable as 0.4.0.** Consumers must accept
-`"vcon": "0.5.0"`. Requires `vcon>=1.0.0,<2` (not yet on PyPI at the time of
-writing; install the reference library from source until it is published).
+`"vcon": "0.5.0"`. Requires `vcon>=1.0.3,<2` (1.0.3 is on PyPI). This
+replaces the `vcon>=0.10.0,<1` safety pin from #13.
 
 - One SIPREC recording session is now one Session Object in `sessions[]`:
   `start`, `duration` (from start and end time), `parties` (the receivers),
@@ -32,6 +32,10 @@ writing; install the reference library from source until it is published).
   scoped `party` plus `session`. `add_lawful_basis_attachment` takes
   `session_index` (default 0) and no longer defaults `dialog_index`.
   Behaviour unchanged: no basis is configured, none is emitted.
+- Transcription `analysis[]` entries use `type: "wtf_transcription"` (the WTF
+  draft's required value; was `"transcript"`) and carry the WTF document as
+  the JSON `body` value instead of a `json.dumps` string. Only affects
+  deployments that plug in a transcription provider.
 - `Signer` takes `alg` (default RS256) and refuses `none` and non-RSA JWS
   algorithms with `SigningError`.
 - Vendored schema `tests/schema/vcon_json_schema.json` replaced verbatim with

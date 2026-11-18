@@ -5,7 +5,9 @@ Per draft-howe-vcon-wtf-extension, transcripts go in `analysis[]` (NOT
   * `vendor` — REQUIRED, identifies the ASR (e.g. "openai-whisper").
   * `product` — model name.
   * `schema` — WTF draft URL.
-  * `encoding: "json"` and `body = json.dumps(wtf_doc)`.
+  * `type: "wtf_transcription"` (the WTF draft's MUST).
+  * `encoding: "json"` and `body` = the WTF document itself (core-05
+    section 2.3.2: a "json" body is the JSON value, not a serialized string).
   * `dialog: [<index>]` of the recording dialog this transcribes.
 
 The top-level `extensions[]` list MUST include `"wtf_transcription"`.
@@ -18,7 +20,6 @@ etc.) lives in a separate module / future PR.
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
 
@@ -87,14 +88,14 @@ def add_transcription_analysis(
     declare_extension(vcon_dict, WTF_TRANSCRIPTION_EXTENSION)
 
     analysis_entry = {
-        "type": "transcript",
+        "type": "wtf_transcription",
         "vendor": provider.vendor,
         "product": provider.product,
         "schema": WTF_SCHEMA_URL,
         "mediatype": "application/json",
         "dialog": [dialog_index],
         "encoding": "json",
-        "body": json.dumps(wtf_doc),
+        "body": wtf_doc,
     }
     vcon_dict.setdefault("analysis", []).append(analysis_entry)
     return True
