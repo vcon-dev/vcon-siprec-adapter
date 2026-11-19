@@ -10,8 +10,13 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime, timezone
 from pathlib import Path
 from vcon import Vcon
+from vcon.event import Event
 from vcon.party import Party
-from .siprec_parser import enrich_participants_from_vendor
+from vcon.session import Session
+from .siprec_parser import (
+    enrich_participants_from_vendor,
+    find_calling_participant_id,
+)
 from vcon.dialog import Dialog
 from .rtp_handler import RTPHandler
 from .config import LawfulBasisConfig, MediaConfig
@@ -32,6 +37,9 @@ from .vcon_extensions import (
 )
 
 logger = logging.getLogger(__name__)
+
+# draft-ietf-vcon-vcon-core-05
+SYNTAX_VERSION = "0.5.0"
 
 
 class VConConverter:
@@ -61,18 +69,29 @@ class VConConverter:
         """Convert a SIPREC session to vCon format."""
         try:
             vcon = Vcon.build_new()
-            # build_new() does not set the syntax version; spec requires "0.4.0"
-            vcon.vcon_dict["vcon"] = "0.4.0"
+            # core-05 syntax version. Set explicitly so the output does not
+            # depend on what the installed library defaults to.
+            vcon.vcon_dict["vcon"] = SYNTAX_VERSION
 
-            # Tags attachment built directly to satisfy draft-02 §4.4:
-            # `party` and `dialog` are REQUIRED (Vcon.add_tag emits neither),
-            # and the speckit Tags Convention prescribes a JSON-stringified
-            # object body (the lib emits an array of "key:value" strings).
+            rs_keys = session_data.get('rs_keys') or {}
+            vendor = session_data.get('vendor_extension') or {}
+            participants = enrich_participants_from_vendor(
+                session_data.get('participants', []) or [], vendor,
+            )
+            self._add_participants(vcon, participants)
+
+            # One SIPREC recording session is one core-05 Session Object. The
+            # per-stream recording Dialogs are added to it below. Created
+            # before any attachment so that attachments can name it.
+            self._add_session(vcon, session_data, participants, vendor)
+
+            # Tags attachment built directly: core-05 section 4.6 needs
+            # `party` plus `dialog` or `session` (Vcon.add_tag scopes to every
+            # Session), and the speckit Tags Convention prescribes a
+            # JSON-stringified object body (the lib emits "key:value" strings).
             # group_id / groupSeq are tagged, not just buried in metadata: a
             # transfer arrives as several SIPREC sessions and therefore several
             # vCons, and the group is the only way to find the siblings.
-            rs_keys = session_data.get('rs_keys') or {}
-            vendor = session_data.get('vendor_extension') or {}
             self._add_tags_attachment(vcon, {
                 "source": "siprec",
                 "call_id": session_data.get('call_id', ''),
@@ -86,21 +105,17 @@ class VConConverter:
                 "conversion_timestamp": datetime.now(timezone.utc).isoformat(),
             }, start=session_data.get('start_time'))
 
-            participants = enrich_participants_from_vendor(
-                session_data.get('participants', []) or [], vendor,
-            )
-            self._add_participants(vcon, participants)
             self._add_audio_dialogs(vcon, session_data, rtp_handler)
+            self._add_participant_events(vcon, participants)
             self._add_session_metadata_attachment(vcon, session_data)
             self._add_sip_signaling(vcon, session_data)
             self._add_lawful_basis(vcon, session_data)
 
             self._strip_default_empty_fields(vcon)
 
-            # Note: vcon.is_valid() rejects extension attachments that legally
-            # use `type:` (lawful_basis) instead of `purpose:`. Spec compliance
-            # is enforced by the test suite; this method does not gate output
-            # on the lib's validator.
+            # Spec compliance is enforced by the test suite against the
+            # vendored Appendix C schema; this method does not gate output on
+            # the lib's validator.
             logger.info(f"Successfully converted session {session_data.get('session_id')} to vCon")
             return vcon
             
@@ -111,7 +126,7 @@ class VConConverter:
     def _add_participants(self, vcon: Vcon, participants: List[Dict[str, Any]]):
         """Add participants to the vCon.
 
-        Core Party fields (draft-02: name, tel, mailto, sip, did, uuid) are
+        Core Party fields (core-05: name, tel, mailto, sip, did, uuid) are
         passed to the constructor. The SIP AOR is a core `sip` field, not a
         `meta` hint (David Wang, 2026-09-06); the NetSapiens subscriber id is a
         core `did`, and its derived stable id a core `uuid`. Only the genuinely
@@ -141,6 +156,78 @@ class VConConverter:
         except Exception as e:
             logger.error(f"Error adding participants: {e}")
     
+    @staticmethod
+    def _duration_seconds(start: Optional[str], end: Optional[str]) -> Optional[float]:
+        """Seconds between two ISO 8601 strings, or None if either is unusable."""
+        if not start or not end:
+            return None
+        try:
+            t0 = datetime.fromisoformat(str(start).replace('Z', '+00:00'))
+            t1 = datetime.fromisoformat(str(end).replace('Z', '+00:00'))
+            if (t0.tzinfo is None) != (t1.tzinfo is None):
+                return None
+            seconds = (t1 - t0).total_seconds()
+        except (TypeError, ValueError):
+            return None
+        return seconds if seconds >= 0 else None
+
+    def _add_session(self, vcon: Vcon, session_data: Dict[str, Any],
+                     participants: List[Dict[str, Any]],
+                     vendor: Dict[str, Any]) -> int:
+        """Add the Session Object for this SIPREC recording session.
+
+        * `parties` are the receivers: every participant of the recorded call.
+        * `originator` is set only when the SRC says who placed the call
+          (vendor `callingParty`) and that party is not first in `parties`.
+          Otherwise the first party stays the implied originator; none is
+          guessed.
+        * `session_id` carries `{local: Recording-Session-ID, remote: SIP
+          Call-ID}` (RFC 7989 section 5). It applies to every Dialog here,
+          because every Dialog is a stream of this one session, so it lives on
+          the Session and not on the Dialogs.
+        """
+        party_indices = list(range(len(participants)))
+        originator = None
+        calling = find_calling_participant_id(
+            session_data.get('vendor_extension') or vendor)
+        if calling:
+            for i, p in enumerate(participants):
+                if p.get('id') == calling:
+                    originator = i if i != 0 else None
+                    break
+
+        recording_session_id = session_data.get('recording_session_id') or ''
+        call_id = session_data.get('call_id') or ''
+        session_id = None
+        if recording_session_id and call_id:
+            session_id = {"local": recording_session_id, "remote": call_id}
+
+        start = session_data.get('start_time') or None
+        return vcon.add_session(Session(
+            start=start,
+            duration=self._duration_seconds(start, session_data.get('end_time')),
+            parties=party_indices or None,
+            originator=originator,
+            session_id=session_id,
+        ))
+
+    def _add_participant_events(self, vcon: Vcon,
+                                participants: List[Dict[str, Any]]) -> None:
+        """Turn SIPREC join/leave metadata into `join` and `drop` Events.
+
+        Source: RFC 7865 `associate-time` / `disassociate-time`. A participant
+        with no such time gets no Event; a time is never invented. Per core-05
+        section 4.3.1.1 these Events carry `sessions` and `party` and no
+        `dialog`.
+        """
+        for i, p in enumerate(participants):
+            for key, etype in (('associate_time', 'join'),
+                               ('disassociate_time', 'drop')):
+                when = p.get(key)
+                if when:
+                    vcon.add_event(Event(
+                        type=etype, time=when, sessions=0, party=i))
+
     def _party_of_stream(self, session_data: Dict[str, Any]) -> Dict[str, int]:
         """{capture stream_id: party index}, from the rs-metadata associations.
 
@@ -216,17 +303,14 @@ class VConConverter:
                 # it orders its participants, which nothing requires.
                 if stream_id in party_of_stream:
                     parties_for_stream = [party_of_stream[stream_id]]
-                    originator = party_of_stream[stream_id]
                 elif participant_count and len(audio_files) == participant_count:
                     logger.warning(
                         "No rs-metadata stream association for %s; falling back "
                         "to positional party mapping (index %d)",
                         stream_id, stream_idx)
                     parties_for_stream = [stream_idx]
-                    originator = stream_idx
                 else:
                     parties_for_stream = all_party_indices
-                    originator = 0 if participant_count else None
 
                 dialog_kwargs = dict(
                     type="recording",
@@ -237,8 +321,6 @@ class VConConverter:
                 )
                 if duration is not None:
                     dialog_kwargs["duration"] = duration
-                if originator is not None:
-                    dialog_kwargs["originator"] = originator
 
                 # Body vs URL+content_hash: see MediaConfig.
                 if self.media_config.mode == "external":
@@ -257,12 +339,12 @@ class VConConverter:
                     dialog_kwargs["body"] = audio_data
                     dialog_kwargs["encoding"] = "base64url"
 
-                vcon.add_dialog(Dialog(**dialog_kwargs))
+                # Each stream is a recording Dialog referenced by the Session.
+                dialog_index = vcon.add_dialog(Dialog(**dialog_kwargs), session=0)
 
                 # Stream provenance (RTP capture origin, raw stream id) lives
                 # in an attachment, not on the Dialog object — Dialog has no
                 # `metadata` field in the spec.
-                dialog_index = len(vcon.dialog) - 1
                 provenance = {
                     "stream_id": stream_id,
                     "source": "rtp_capture",
@@ -302,7 +384,7 @@ class VConConverter:
     def _add_session_metadata_attachment(self, vcon: Vcon, session_data: Dict[str, Any]):
         """Add SIPREC session metadata as a vCon attachment.
 
-        Per draft-ietf-vcon-vcon-core-02, structured metadata belongs in
+        Per draft-ietf-vcon-vcon-core-05, structured metadata belongs in
         attachments[] (with `purpose`), not as a synthetic text dialog.
         """
         try:
@@ -343,7 +425,7 @@ class VConConverter:
                 "purpose": "session_metadata",
                 "start": attachment_start,
                 "party": 0,
-                "dialog": 0,
+                "session": 0,
                 "mediatype": "application/json",
                 "encoding": "json",
                 "body": json.dumps(session_info),
@@ -363,7 +445,7 @@ class VConConverter:
                     "purpose": "siprec_wire",
                     "start": attachment_start,
                     "party": 0,
-                    "dialog": 0,
+                    "session": 0,
                     "mediatype": "application/json",
                     "encoding": "json",
                     "body": json.dumps(wire),
@@ -375,13 +457,12 @@ class VConConverter:
     def _add_tags_attachment(
         self, vcon: Vcon, tags: Dict[str, str], start: Optional[str] = None,
     ):
-        """Append a draft-02-compliant tags attachment.
+        """Append a core-05 tags attachment.
 
-        See speckit "Tags Convention": purpose=tags, party=0, dialog=0,
+        See speckit "Tags Convention": purpose=tags, party=0, session=0,
         encoding=json, body=JSON-stringified object. `start` and `mediatype`
         are core Attachment-object requirements whenever a body is present
-        (draft-ietf-vcon-vcon-core-04 Attachment Object; CON-1091 schema
-        test).
+        (draft-ietf-vcon-vcon-core-05 Attachment Object).
         """
         # Drop empty values so consumers don't see "key": "".
         clean = {k: v for k, v in tags.items() if v not in (None, "")}
@@ -389,7 +470,7 @@ class VConConverter:
             "purpose": "tags",
             "start": start or datetime.now(timezone.utc).isoformat(),
             "party": 0,
-            "dialog": 0,
+            "session": 0,
             "mediatype": "application/json",
             "encoding": "json",
             "body": json.dumps(clean),
@@ -439,25 +520,21 @@ class VConConverter:
             )
 
             # Stamp Dialog Object extension parameters on every recording.
-            recording_session_id = session_data.get('recording_session_id') or ''
+            # The SIP session identifier is on the Session Object (see
+            # _add_session), not repeated on each Dialog: it applies to all of
+            # them (core-05 section 4.2.5).
             for dialog in vcon.dialog:
                 if dialog.get('type') == 'recording':
                     annotate_dialog_with_sip(dialog, sip_call_id=call_id)
-                    # draft-02 / speckit §2 item 6: Dialog session_id is
-                    # `{local: UUID, remote: UUID}` per RFC 7989 §5. For
-                    # SIPREC the Recording-Session-ID is the local
-                    # identifier and the SIP Call-ID is the remote.
-                    if recording_session_id:
-                        dialog["session_id"] = {
-                            "local": recording_session_id,
-                            "remote": call_id,
-                        }
 
         except Exception as e:
             logger.error(f"Error adding sip_signaling extension data: {e}")
 
     def _add_lawful_basis(self, vcon: Vcon, session_data: Dict[str, Any]):
         """Emit a lawful_basis attachment per draft-howe-vcon-lawful-basis.
+
+        Scoped with `party` plus `session` (the one Session for this SIPREC
+        recording session), not with a Dialog index.
 
         CON-1091: `lawful_basis.lawful_basis` has no code default. If it is
         enabled but unset, log one warning and omit the attachment rather
@@ -480,6 +557,7 @@ class VConConverter:
             add_lawful_basis_attachment(
                 vcon.vcon_dict,
                 lawful_basis=self.lawful_basis_config.lawful_basis,
+                session_index=0,
                 purposes=self.lawful_basis_config.purposes,
                 expiration=self.lawful_basis_config.expiration,
                 justification=self.lawful_basis_config.justification,
@@ -596,8 +674,8 @@ class VConConverter:
         complete check than `is_valid()` covers.
         """
         try:
-            if vcon.vcon_dict.get("vcon") != "0.4.0":
-                logger.error("vCon syntax version is not 0.4.0")
+            if vcon.vcon_dict.get("vcon") != SYNTAX_VERSION:
+                logger.error("vCon syntax version is not %s", SYNTAX_VERSION)
                 return False
 
             if not vcon.parties:

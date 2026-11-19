@@ -45,7 +45,7 @@ def add_sip_message_trace(
     remote_uri: Optional[str] = None,
     local_uri: Optional[str] = None,
     media_streams: Optional[List[Dict[str, Any]]] = None,
-    dialog_index: int = 0,
+    session_index: int = 0,
     party_index: int = 0,
     start: Optional[str] = None,
 ) -> None:
@@ -70,7 +70,7 @@ def add_sip_message_trace(
     attachment = {
         "purpose": "sip-message-trace",
         "party": party_index,
-        "dialog": dialog_index,
+        "session": session_index,
         "mediatype": "application/json",
         "encoding": "json",
         "body": json.dumps(body),
@@ -125,29 +125,23 @@ def add_lawful_basis_attachment(
     purposes: Iterable[str] = ("recording",),
     expiration: Optional[str] = None,
     party_index: int = 0,
-    dialog_index: int = 0,
+    session_index: Optional[Any] = 0,
+    dialog_index: Optional[int] = None,
     granted_at: Optional[str] = None,
     justification: Optional[str] = None,
 ) -> None:
     """Append a `lawful_basis` attachment per draft-howe-vcon-lawful-basis.
 
-    Emits both `purpose: "lawful_basis"` (draft-ietf-vcon-vcon-core-04,
-    CON-1091) and `type: "lawful_basis"` (this attachment's own draft, and
-    the value some existing consumers key off of). CON-1091 found two
-    reasons to keep `type` alongside `purpose` rather than drop it:
+    Emits `purpose: "lawful_basis"`. The legacy `type` key is no longer
+    written: the core-05 schema defines `purpose` only.
 
-      * `vcon-lib`'s `Vcon.is_valid()` requires `purpose` on every
-        attachment (`purpose" not in attachment` is a hard error), so a
-        `type`-only attachment fails core validation.
-      * conserver's `pii_redact` link (vcon-server
-        `conserver/links/pii_redact/redactor.py`) still special-cases
-        `att.get("type") == "lawful_basis"` when it builds and recognizes
-        these attachments, and vcon-server's read-path legacy-field
-        normalizer (`common/lib/vcon_compat.py::_normalize_attachment`)
-        explicitly preserves `type` when `purpose` is *also* present,
-        treating the dual-field shape as legitimate rather than legacy.
+    Scope (core-05 section 4.6): `party` plus `session`. `party` is the party
+    that records the basis. `session_index` is the Session (or list of
+    Sessions) the basis covers; it is never widened from a Dialog index. Pass
+    `session_index=None` together with a `dialog_index` for a dialog-only
+    scope.
 
-    The body is the raw JSON object (draft-04 `encoding: "json"` bodies are
+    The body is the raw JSON object (core-05 `encoding: "json"` bodies are
     the JSON value itself, not a `json.dumps` string).
     """
     if lawful_basis not in VALID_LAWFUL_BASES:
@@ -179,12 +173,16 @@ def add_lawful_basis_attachment(
 
     attachment = {
         "purpose": "lawful_basis",
-        "type": "lawful_basis",
         "party": party_index,
-        "dialog": dialog_index,
         "mediatype": "application/json",
         "encoding": "json",
         "body": body,
         "start": granted_at,
     }
+    if session_index is not None:
+        attachment["session"] = session_index
+    if dialog_index is not None:
+        attachment["dialog"] = dialog_index
+    if "session" not in attachment and "dialog" not in attachment:
+        raise ValueError("lawful_basis attachment needs session_index or dialog_index")
     vcon_dict.setdefault("attachments", []).append(attachment)

@@ -82,12 +82,12 @@ class TestSpecCompliance:
     def setup_method(self):
         self.converter = VConConverter()
 
-    def test_syntax_version_is_0_4_0(self):
+    def test_syntax_version_is_0_5_0(self):
         vcon = self.converter.convert_session_to_vcon(
             _session_data(), _empty_rtp_handler()
         )
         assert vcon is not None
-        assert vcon.vcon_dict["vcon"] == "0.4.0"
+        assert vcon.vcon_dict["vcon"] == "0.5.0"
 
     def test_uuid_present(self):
         vcon = self.converter.convert_session_to_vcon(
@@ -163,9 +163,10 @@ class TestTagsAttachment:
             if a.get("purpose") == "tags"
         ]
         assert len(tags) == 1
-        # draft-02 §4.4: party and dialog REQUIRED on every attachment.
+        # core-05 §4.6: party plus dialog or session on every attachment.
         assert tags[0]["party"] == 0
-        assert tags[0]["dialog"] == 0
+        assert tags[0]["session"] == 0
+        assert "dialog" not in tags[0]
         assert tags[0]["encoding"] == "json"
 
     def test_tags_body_is_json_object_string(self):
@@ -216,14 +217,15 @@ class TestDialogDefaultStrip:
                 assert d.get("meta") != {}
 
 
-class TestDialogSessionId:
-    """draft-02 / RFC 7989 §5: Dialog `session_id` is `{local, remote}`.
-    For SIPREC, local = recording-session-id, remote = SIP Call-ID."""
+class TestSessionSessionId:
+    """RFC 7989 §5: `session_id` is `{local, remote}`. For SIPREC,
+    local = recording-session-id, remote = SIP Call-ID. It applies to every
+    Dialog, so core-05 puts it on the Session Object."""
 
     def setup_method(self):
         self.converter = VConConverter()
 
-    def test_session_id_populated_on_recording_dialogs(self):
+    def test_session_id_on_session_not_dialogs(self):
         with tempfile.TemporaryDirectory() as tmp:
             wav = Path(tmp) / "stream_0.wav"
             _make_wav(wav, payload_bytes=8)
@@ -233,11 +235,12 @@ class TestDialogSessionId:
             )
             recordings = [d for d in vcon.dialog if d.get("type") == "recording"]
             assert recordings
+            assert vcon.vcon_dict["sessions"][0]["session_id"] == {
+                "local": "rec_789",
+                "remote": "call_456@example.com",
+            }
             for d in recordings:
-                assert d["session_id"] == {
-                    "local": "rec_789",
-                    "remote": "call_456@example.com",
-                }
+                assert "session_id" not in d
 
     def test_session_id_omitted_when_no_recording_session_id(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -247,6 +250,7 @@ class TestDialogSessionId:
             vcon = self.converter.convert_session_to_vcon(
                 _session_data(recording_session_id=''), handler
             )
+            assert "session_id" not in vcon.vcon_dict["sessions"][0]
             for d in vcon.dialog:
                 if d.get("type") == "recording":
                     assert "session_id" not in d
@@ -272,7 +276,7 @@ class TestSessionMetadataAttachment:
             if a.get("purpose") == "session_metadata"
         )
         assert meta["party"] == 0
-        assert meta["dialog"] == 0
+        assert meta["session"] == 0
         assert meta["encoding"] == "json"
         # body must be a string (core spec)
         assert isinstance(meta["body"], str)
@@ -333,7 +337,7 @@ class TestLawfulBasisAttachment:
         # And the extension must NOT be declared if no attachment was emitted.
         assert "lawful_basis" not in vcon.vcon_dict.get("extensions", [])
 
-    def test_configured_basis_emits_purpose_and_type(self):
+    def test_configured_basis_scoped_with_party_and_session(self):
         converter = VConConverter(
             lawful_basis_config=LawfulBasisConfig(
                 enabled=True,
@@ -348,10 +352,12 @@ class TestLawfulBasisAttachment:
             a for a in vcon.vcon_dict["attachments"]
             if a.get("purpose") == "lawful_basis"
         )
-        # CON-1091: both fields present (see add_lawful_basis_attachment
-        # docstring), and body is the raw JSON object, not a json.dumps
-        # string.
-        assert lb["type"] == "lawful_basis"
+        # core-05: `purpose` only, scoped with party plus session, and the
+        # body is the raw JSON object, not a json.dumps string.
+        assert "type" not in lb
+        assert lb["party"] == 0
+        assert lb["session"] == 0
+        assert "dialog" not in lb
         assert isinstance(lb["body"], dict)
         body = lb["body"]
         assert body["lawful_basis"] == "consent"
@@ -382,7 +388,7 @@ class TestRecordingDialog:
             for rec in recordings:
                 assert rec["encoding"] == "base64url"
 
-    def test_dialog_has_originator(self):
+    def test_dialog_has_no_originator(self):
         with tempfile.TemporaryDirectory() as tmp:
             wav = Path(tmp) / "stream_0.wav"
             _make_wav(wav, payload_bytes=8)
@@ -392,8 +398,9 @@ class TestRecordingDialog:
                 _session_data(), handler
             )
             for rec in (d for d in vcon.dialog if d.get("type") == "recording"):
-                assert "originator" in rec
-                assert isinstance(rec["originator"], int)
+                # core-05: originator moved to the Session Object.
+                assert "originator" not in rec
+                assert "session_id" not in rec
 
     def test_dialog_carries_sip_call_id(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -28,17 +28,35 @@ class SigningError(Exception):
     """Raised when signing config is invalid or the operation fails."""
 
 
+#: JWS algorithms this signer may use with an RSA key. core-05 section 6.2.2:
+#: "The alg parameter MUST NOT have the value none".
+RSA_JWS_ALGORITHMS = ("RS256", "RS384", "RS512", "PS256", "PS384", "PS512")
+
+
 class Signer:
     """Loads an RSA private key once and signs vCons in place."""
 
-    def __init__(self, private_key: RSAPrivateKey):
+    def __init__(self, private_key: RSAPrivateKey, alg: str = "RS256"):
+        self._check_alg(alg)
         self._private_key = private_key
+        self._alg = alg
+
+    @staticmethod
+    def _check_alg(alg) -> None:
+        """Reject `none` (any case or padding) and anything not an RSA JWS alg."""
+        if not isinstance(alg, str) or alg.strip().lower() == "none":
+            raise SigningError('JWS alg "none" is not permitted (core-05 section 6.2.2)')
+        if alg not in RSA_JWS_ALGORITHMS:
+            raise SigningError(
+                f"JWS alg {alg!r} is not supported; use one of {RSA_JWS_ALGORITHMS}"
+            )
 
     @classmethod
     def from_pem_file(
         cls,
         pem_path: str,
         password: Optional[bytes] = None,
+        alg: str = "RS256",
     ) -> "Signer":
         """Load a PEM-encoded RSA private key from `pem_path`."""
         path = Path(pem_path)
@@ -54,12 +72,12 @@ class Signer:
                 f"Signing key at {pem_path} is not an RSA private key "
                 f"(got {type(key).__name__}); JWS RS256 requires RSA"
             )
-        return cls(key)
+        return cls(key, alg=alg)
 
     def sign(self, vcon: Vcon) -> Vcon:
         """Sign the vCon in place; returns the same Vcon for chaining."""
         try:
-            vcon.sign(self._private_key)
+            vcon.sign(self._private_key, alg=self._alg)
             logger.info(f"Signed vCon (uuid={vcon.uuid})")
             return vcon
         except Exception as e:

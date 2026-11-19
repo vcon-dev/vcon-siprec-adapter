@@ -1,6 +1,5 @@
 """Tests for the pluggable transcription provider interface."""
 
-import json
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -121,15 +120,14 @@ class TestAddTranscriptionAnalysis:
         assert added is True
         assert WTF_TRANSCRIPTION_EXTENSION in d["extensions"]
         analysis = d["analysis"][0]
-        assert analysis["type"] == "transcript"
+        assert analysis["type"] == "wtf_transcription"
         assert analysis["vendor"] == "stub-asr"
         assert analysis["product"] == "stub-1.0"
         assert analysis["schema"] == WTF_SCHEMA_URL
         assert analysis["dialog"] == [2]
         assert analysis["encoding"] == "json"
-        # body must be a JSON-encoded string per core spec.
-        assert isinstance(analysis["body"], str)
-        assert json.loads(analysis["body"]) == wtf_doc
+        # core-05 section 2.3.2: a "json" body is the JSON value itself.
+        assert analysis["body"] == wtf_doc
         # Speckit Analysis Object lists `mediatype` as recommended.
         assert analysis["mediatype"] == "application/json"
 
@@ -180,5 +178,7 @@ class TestConverterIntegration:
             assert len(analysis) == 2
             assert {a["dialog"][0] for a in analysis} == {0, 1}
             assert all(a["vendor"] == "stub-asr" for a in analysis)
+            assert all(a["type"] == "wtf_transcription" for a in analysis)
+            assert all(isinstance(a["body"], dict) for a in analysis)
             assert WTF_TRANSCRIPTION_EXTENSION in vcon.vcon_dict["extensions"]
             assert provider.calls == [files["stream_0"], files["stream_1"]]
